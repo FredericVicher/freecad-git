@@ -1,0 +1,7 @@
+# Exclude development and test files from Addon Manager installations
+test_*.py export-ignore
+detect_cli.py export-ignore
+CLAUDE.md export-ignore
+*.pyproj export-ignore
+*.sln export-ignore
+.vs/ export-ignore

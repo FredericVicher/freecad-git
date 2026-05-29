@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package format="1">
+    <name>freecad-git</name>
+    <description>FreeCAD workbench for efficient version control. Commit selective document content to Git, navigate project history, and pull any previous version.</description>
+    <version>0.1.0</version>
+    <date>2026-05-29</date>
+    <author>Frédéric Vicher</author>
+    <maintainer email="frederic.vicher@laposte.net">Frédéric Vicher</maintainer>
+    <license>LGPL-2.0+</license>
+    <url type="repository">https://github.com/FredericVicher/freecad-git</url>
+    <icon>https://raw.githubusercontent.com/FredericVicher/freecad-git/main/freecad_git/icons/workbench.svg</icon>
+    <classname>freecad_git</classname>
+    <requires freecad="1.1" />
+    <content>
+        <workbench name="Git Workbench">
+            Selective Git versioning for FreeCAD documents. Commit and pull project snapshots with automatic recomputation of derived features.
+        </workbench>
+    </content>
+</package>
