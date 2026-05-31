@@ -114,4 +114,4 @@ Found a bug or have an idea? Contributions are welcome on GitHub.
 
 ## License
 
-This workbench is released under the [**LGPL 2.0+**](https://opensource.org/licenses/LGPL-2.0) license.
+This workbench is released under the [**LGPL 2.1+**](https://opensource.org/licenses/LGPL-2.1) license.
