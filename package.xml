@@ -9,16 +9,16 @@
     <date>2026-05-29</date>
     <author email="frederic.vicher@laposte.net">Frédéric Vicher</author>
     <maintainer email="frederic.vicher@laposte.net">Frédéric Vicher</maintainer>
-    <license file="LICENSE">LGPL-2.1+</license>
+    <license file="LICENSE">LGPL-2.1-or-later</license>
     <url type="license">https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html</url>
     <url type="repository" branch="main">https://github.com/FredericVicher/freecad-git</url>
     <url type="bugtracker">https://github.com/FredericVicher/freecad-git/issues</url>
     <icon>https://raw.githubusercontent.com/FredericVicher/freecad-git/main/freecad_git/icons/workbench.svg</icon>
-    <classname>freecad_git</classname>
+    <classname>GitWorkbench</classname>
     <content>
         <workbench name="Git">Selective Git versioning for FreeCAD documents with automatic recomputation of derived features.</workbench>
-        <workbench>freecad_git</workbench>
     </content>
+    <depend type='python'>pygit2</depend>
 
     <tag>diff</tag>
     <tag>versioning</tag>
