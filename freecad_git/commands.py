@@ -7,6 +7,7 @@ wrapper around the corresponding workflow function.
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 import FreeCAD       # type: ignore[import-not-found]
@@ -315,12 +316,13 @@ class PullCommand:
 class _LogDialog(QtWidgets.QDialog):
     """Dialog for viewing and pulling commits from log with branch info."""
 
-    def __init__(self, parent, doc, store, log_data, branches):
+    def __init__(self, parent, doc, store, log_data, branches, current_commit=None):
         super().__init__(parent)
         self.doc = doc
         self.store = store
-        self.log_data = log_data  # List of (short_oid, author, summary, branch, parents, is_branch_start, child_count)
+        self.log_data = log_data  # List of (short_oid, author, summary, branch, parents, is_branch_start, child_count, timestamp)
         self.branches = branches  # List of branch names
+        self.current_commit = current_commit[:8] if current_commit else None
         self.selected_commit = None
         self.selected_branch = None
         self._line_to_commit = {}  # Map line number to commit info
@@ -340,6 +342,7 @@ class _LogDialog(QtWidgets.QDialog):
         # Generate and display the log
         display_text = self._generate_log_display()
         self.log_display.setPlainText(display_text)
+        self._highlight_current_commit()
 
         # Enable click selection
         self.log_display.mousePressEvent = self._on_text_click
@@ -371,17 +374,19 @@ class _LogDialog(QtWidgets.QDialog):
         # Header
         lines.append("=" * 100)
         lines.append("COMMIT HISTORY - Click to select | 'Pull selected commit' to checkout")
+        lines.append("OID      DATE/TIME        BRANCH                    AUTHOR               MESSAGE")
         lines.append("=" * 100)
 
-        for i, (short_oid, author, summary, branch, parents, is_branch_start, child_count) in enumerate(self.log_data):
+        for i, (short_oid, author, summary, branch, parents, is_branch_start, child_count, timestamp) in enumerate(self.log_data):
             # Show parent reference only if this commit creates a branch divergence
             parent_str = ""
             if is_branch_start and parents:
                 parent_str = f" <- {parents[0]}"
 
             # Create commit line with branch info and parent reference
+            checkout_dt = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
             branch_info = f"[{branch}{parent_str}]"
-            commit_line = f"{short_oid} {branch_info:<25s} {author[:20]:20s} {summary[:50]}"
+            commit_line = f"{short_oid} {checkout_dt:16s} {branch_info:<25s} {author[:20]:20s} {summary[:50]}"
 
             lines.append(commit_line)
 
@@ -394,6 +399,25 @@ class _LogDialog(QtWidgets.QDialog):
 
         return "\n".join(lines)
 
+
+    def _highlight_current_commit(self):
+        """Highlight the tracked current commit, if it exists in the log."""
+        if not self.current_commit:
+            return
+
+        for line_num, (short_oid, _) in self._line_to_commit.items():
+            if short_oid == self.current_commit:
+                cursor = self.log_display.textCursor()
+                cursor.movePosition(QtGui.QTextCursor.Start)
+                for _ in range(line_num):
+                    cursor.movePosition(QtGui.QTextCursor.Down)
+                cursor.select(QtGui.QTextCursor.LineUnderCursor)
+
+                fmt = QtGui.QTextCharFormat()
+                fmt.setBackground(QtGui.QColor(120, 180, 120))
+                fmt.setForeground(QtGui.QColor(0, 0, 0))
+                cursor.mergeCharFormat(fmt)
+                return
 
     def _on_text_click(self, event):
         """Handle click on commit line."""
@@ -594,12 +618,13 @@ class LogCommand:
             branch = oid_to_branch.get(short_oid, 'main')
             is_branch_start = is_branch_start_map.get(short_oid, False)
             child_count = len(commit_children.get(short_oid, []))
-            log_data.append((short_oid, author, summary, branch, parents, is_branch_start, child_count))
+            log_data.append((short_oid, author, summary, branch, parents, is_branch_start, child_count, timestamp))
 
         # Sort by timestamp (newest first)
-        log_data.sort(key=lambda x: all_commits_info[x[0]][3], reverse=True)
+        log_data.sort(key=lambda x: x[7], reverse=True)
 
-        dialog = _LogDialog(_mainwindow(), doc, store, log_data, branches)
+        current_commit = store.current_commit()
+        dialog = _LogDialog(_mainwindow(), doc, store, log_data, branches, current_commit=current_commit)
         dialog.exec()
 
 
