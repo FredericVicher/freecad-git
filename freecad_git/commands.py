@@ -43,11 +43,12 @@ def _log(msg: str) -> None:
 class _CommitDialog(QtWidgets.QDialog):
     """Dialog for committing with branch selection and creation."""
 
-    def __init__(self, parent, store, current_branch, needs_new_branch):
+    def __init__(self, parent, store, current_branch, needs_new_branch, allow_new_branch=False):
         super().__init__(parent)
         self.store = store
         self.current_branch = current_branch
         self.needs_new_branch = needs_new_branch
+        self.allow_new_branch = allow_new_branch
         self.selected_branch = current_branch
         self.commit_message = ""
         self.create_new = needs_new_branch
@@ -55,6 +56,10 @@ class _CommitDialog(QtWidgets.QDialog):
         self.setWindowTitle("Git Commit")
         self.setMinimumWidth(400)
         self._build_ui()
+
+    def _toggle_branch_input(self, checked):
+        if self.new_branch_input is not None:
+            self.new_branch_input.setEnabled(checked)
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout()
@@ -67,6 +72,9 @@ class _CommitDialog(QtWidgets.QDialog):
         layout.addWidget(info_label)
 
         # If needs new branch, show that info and ask for branch name
+        self.new_branch_input = None
+        self.new_branch_checkbox = None
+
         if self.needs_new_branch:
             warning = QtWidgets.QLabel("This commit has descendants.\nCreating a new branch...")
             warning.setStyleSheet("color: #FF8800; font-weight: bold;")
@@ -78,8 +86,18 @@ class _CommitDialog(QtWidgets.QDialog):
             self.new_branch_input = QtWidgets.QLineEdit()
             branch_layout.addWidget(self.new_branch_input)
             layout.addLayout(branch_layout)
-        else:
-            self.new_branch_input = None
+        elif self.allow_new_branch:
+            self.new_branch_checkbox = QtWidgets.QCheckBox("Create a new branch before committing")
+            self.new_branch_checkbox.toggled.connect(self._toggle_branch_input)
+            layout.addWidget(self.new_branch_checkbox)
+
+            branch_layout = QtWidgets.QHBoxLayout()
+            branch_layout.addWidget(QtWidgets.QLabel("New branch name:"))
+            self.new_branch_input = QtWidgets.QLineEdit()
+            self.new_branch_input.setEnabled(False)
+            self.new_branch_input.setPlaceholderText("branch-name")
+            branch_layout.addWidget(self.new_branch_input)
+            layout.addLayout(branch_layout)
 
         # Commit message
         layout.addWidget(QtWidgets.QLabel("Commit message:"))
@@ -105,8 +123,12 @@ class _CommitDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Git Commit", "Commit message cannot be empty.")
             return
 
-        if self.needs_new_branch:
-            new_name = self.new_branch_input.text().strip()
+        should_create_branch = self.needs_new_branch
+        if self.new_branch_checkbox is not None:
+            should_create_branch = self.new_branch_checkbox.isChecked()
+
+        if should_create_branch:
+            new_name = self.new_branch_input.text().strip() if self.new_branch_input is not None else ""
             if not new_name:
                 QtWidgets.QMessageBox.warning(self, "Git Commit", "Branch name cannot be empty.")
                 return
@@ -118,6 +140,33 @@ class _CommitDialog(QtWidgets.QDialog):
 
         self.commit_message = message
         self.accept()
+
+
+def _normalize_commit_oid(store: GitStore, commit_oid: str | None) -> str | None:
+    """Resolve a commit identifier (short/full) to a full OID when possible."""
+    if not commit_oid:
+        return None
+    try:
+        return str(store.repo.revparse_single(commit_oid).peel(pygit2.Commit).id)
+    except Exception:
+        return commit_oid
+
+
+def _commit_has_descendants_on_branch(store: GitStore, branch_name: str, commit_oid: str | None) -> bool:
+    """Return True if commit_oid has children in the specified branch history."""
+    normalized_oid = _normalize_commit_oid(store, commit_oid)
+    if not normalized_oid:
+        return False
+
+    branch_ref = f"refs/heads/{branch_name}"
+    if branch_ref not in store.repo.references:
+        return False
+
+    target = store.repo.references[branch_ref].target
+    for commit in store.repo.walk(target, pygit2.GIT_SORT_TIME):
+        if normalized_oid in {str(parent_id) for parent_id in commit.parent_ids}:
+            return True
+    return False
 
 
 def _resolve_author() -> Author:
@@ -177,26 +226,38 @@ class CommitCommand:
                 _log(f"git: initialized CURRENT_COMMIT with HEAD {head_oid[:12]}")
 
         current_branch = store.current_branch()
-        current_oid = store.current_commit()
+        current_oid = _normalize_commit_oid(store, store.current_commit())
 
-        # Check if current commit is the HEAD of the current branch
-        # Need to create a branch only if committing on a non-HEAD commit
+        # If the current version already has descendants, keep it on a new branch.
+        # If it is the branch HEAD and has no descendants, offer the user an optional
+        # checkbox to create a new branch before the commit.
         needs_new_branch = False
+        allow_new_branch = False
         if current_oid and current_branch:
-            current_short = current_oid[:8]
             try:
-                # Get the HEAD of the current branch
                 branch_ref = f"refs/heads/{current_branch}"
                 if branch_ref in store.repo.references:
-                    branch_head = str(store.repo.references[branch_ref].target)[:8]
-                    # If current commit is not the branch HEAD, need a new branch
-                    if current_short != branch_head:
+                    branch_head = str(store.repo.references[branch_ref].target)
+                    has_descendants = _commit_has_descendants_on_branch(store, current_branch, current_oid)
+                    if has_descendants or current_oid != branch_head:
                         needs_new_branch = True
+                    else:
+                        allow_new_branch = True
+
+                    _log(
+                        "git commit: branch-decision "
+                        f"branch={current_branch} "
+                        f"current={current_oid[:8]} "
+                        f"head={branch_head[:8]} "
+                        f"has_descendants={has_descendants} "
+                        f"needs_new_branch={needs_new_branch} "
+                        f"allow_new_branch={allow_new_branch}"
+                    )
             except Exception:
                 pass
 
         # Show commit dialog
-        dialog = _CommitDialog(_mainwindow(), store, current_branch, needs_new_branch)
+        dialog = _CommitDialog(_mainwindow(), store, current_branch, needs_new_branch, allow_new_branch=allow_new_branch)
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             _log("git commit: cancelled by user")
             return
@@ -210,20 +271,23 @@ class CommitCommand:
         # Add branch name to commit message for tracking
         message_with_branch = f"{message}\n\n[branch: {target_branch}]"
 
+        if dialog.create_new:
+            branch_start_ref = current_oid or "HEAD"
+            try:
+                store.create_branch(dialog.new_branch_name, branch_start_ref)
+                store.switch_branch(dialog.new_branch_name)
+                _log(f"git branch: created '{dialog.new_branch_name}' from {branch_start_ref[:12]}")
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(
+                    _mainwindow(), "Git Commit",
+                    f"Could not create branch '{dialog.new_branch_name}': {exc}")
+                return
+
         try:
             oid = workflow.commit_doc(doc, store, message_with_branch, author)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(_mainwindow(), "Git Commit", str(exc))
             return
-
-        # Create new branch if needed
-        if dialog.create_new:
-            try:
-                store.create_branch(dialog.new_branch_name, "HEAD")
-                store.switch_branch(dialog.new_branch_name)
-                _log(f"git branch: created '{dialog.new_branch_name}' at {oid[:12]}")
-            except Exception as exc:
-                _log(f"git branch: WARNING - could not create '{dialog.new_branch_name}': {exc}")
 
         # Update CURRENT_COMMIT so next commit has correct parent
         # (Document in memory is already the correct state - it's what we just committed)
@@ -391,8 +455,8 @@ class _LogDialog(QtWidgets.QDialog):
             lines.append(commit_line)
 
             # Map line number (in the text display) to commit info for click handling
-            # Line number is 3 (after headers) + i
-            line_num = 3 + i
+            # Line number is 4 (after headers) + i
+            line_num = 4 + i
             self._line_to_commit[line_num] = (short_oid, branch)
 
         lines.append("=" * 100)
@@ -466,10 +530,10 @@ class _LogDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Git Pull", "Select a commit first.")
             return
         self.close()
-        self._do_pull(self.selected_commit)
+        self._do_pull(self.selected_commit, self.selected_branch)
 
-    def _do_pull(self, commit_ref: str):
-        """Pull the specified commit."""
+    def _do_pull(self, commit_ref: str, branch_name: str | None = None):
+        """Pull the specified commit and track its branch when provided."""
         if not self.doc or not self.doc.FileName:
             QtWidgets.QMessageBox.critical(
                 _mainwindow(), "Git Pull",
@@ -489,6 +553,12 @@ class _LogDialog(QtWidgets.QDialog):
         FreeCAD.closeDocument(doc_name)
         try:
             oid, touched = workflow.pull_doc(self.store, cache_path, ref=commit_ref)
+            if branch_name:
+                try:
+                    self.store.switch_branch(branch_name)
+                    _log(f"git pull: switched current branch to {branch_name}")
+                except Exception as branch_exc:
+                    _log(f"git pull: WARNING - could not switch branch to {branch_name}: {branch_exc}")
             FreeCAD.openDocument(str(cache_path))
             _log(f"Pulled {oid[:12]}")
         except Exception as exc:
@@ -522,12 +592,10 @@ class LogCommand:
 
         branches = store.list_branches()
 
-        # Collect all commits and their containing branches in one pass
-        all_commits_info = {}  # short_oid -> (author, summary, parents, timestamp)
-        commit_to_branches = {}  # short_oid -> set of branch names
+        # Collect commits using full OIDs internally; short IDs are only for display.
+        all_commits_info = {}  # full_oid -> (short_oid, author, summary, parent_full_oids, timestamp)
 
         try:
-            # Walk each branch once, collect all commits and their branch membership
             for branch in branches:
                 branch_ref = f"refs/heads/{branch}"
                 if branch_ref not in store.repo.references:
@@ -535,92 +603,75 @@ class LogCommand:
                 target = store.repo.references[branch_ref].target
 
                 for commit in store.repo.walk(target, pygit2.GIT_SORT_TIME):
-                    short_oid = str(commit.id)[:8]
-
-                    # Collect commit info (only once)
-                    if short_oid not in all_commits_info:
+                    full_oid = str(commit.id)
+                    if full_oid not in all_commits_info:
+                        short_oid = full_oid[:8]
                         author = commit.author.name
                         summary = commit.message.splitlines()[0] if commit.message else ""
-                        parents = [str(p)[:8] for p in commit.parent_ids]
+                        parents = [str(parent_id) for parent_id in commit.parent_ids]
                         timestamp = commit.commit_time
-                        all_commits_info[short_oid] = (author, summary, parents, timestamp)
-
-                    # Track which branches contain this commit
-                    if short_oid not in commit_to_branches:
-                        commit_to_branches[short_oid] = set()
-                    commit_to_branches[short_oid].add(branch)
+                        all_commits_info[full_oid] = (short_oid, author, summary, parents, timestamp)
 
         except Exception as e:
             FreeCAD.Console.PrintError(f"Error collecting commits: {e}\n")
 
-        # Build map of branch HEADs
-        branch_heads = {}  # short_oid -> branch_name
+        branch_heads = {}
         for branch in branches:
             branch_ref = f"refs/heads/{branch}"
             if branch_ref in store.repo.references:
-                head_oid = str(store.repo.references[branch_ref].target)[:8]
-                branch_heads[head_oid] = branch
+                head_oid = str(store.repo.references[branch_ref].target)
+                if head_oid not in branch_heads:
+                    branch_heads[head_oid] = branch
 
-        # Extract branch info from commit messages (stored as [branch: name] in message)
-        commit_branch_from_message = {}  # short_oid -> branch_name
-        for short_oid, (author, summary, parents, timestamp) in all_commits_info.items():
+        commit_branch_from_message = {}
+        for full_oid in all_commits_info.keys():
             try:
-                commit = store.repo[short_oid]
+                commit = store.repo[full_oid]
                 if commit and commit.message:
-                    # Look for [branch: name] pattern in commit message
                     for line in commit.message.split('\n'):
                         if line.strip().startswith('[branch:') and line.strip().endswith(']'):
-                            branch_name = line.strip()[8:-1].strip()  # Extract name from [branch: name]
+                            branch_name = line.strip()[8:-1].strip()
                             if branch_name:
-                                commit_branch_from_message[short_oid] = branch_name
+                                commit_branch_from_message[full_oid] = branch_name
                                 break
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f"git log: WARNING - could not inspect commit {full_oid[:8]}: {exc}")
 
-        # Assign each commit to exactly one branch
-        # Priority: 1) branch from commit message, 2) if it's a branch HEAD, use that branch, 3) default to main
-        # (commits without [branch: name] tag are from before branch tracking was added, they were all on main)
         oid_to_branch = {}
-        for short_oid in all_commits_info.keys():
-            # First: check if branch is stored in commit message
-            if short_oid in commit_branch_from_message:
-                oid_to_branch[short_oid] = commit_branch_from_message[short_oid]
-            # Second: check if this is a branch HEAD
-            elif short_oid in branch_heads:
-                oid_to_branch[short_oid] = branch_heads[short_oid]
+        for full_oid in all_commits_info.keys():
+            if full_oid in branch_heads:
+                oid_to_branch[full_oid] = branch_heads[full_oid]
+            elif full_oid in commit_branch_from_message:
+                oid_to_branch[full_oid] = commit_branch_from_message[full_oid]
             else:
-                # Old commits without [branch: name] tag default to main
-                oid_to_branch[short_oid] = "main"
+                oid_to_branch[full_oid] = "main"
 
-        # Calculate is_branch_start: True if branch differs from parent's branch
         is_branch_start_map = {}
-        for short_oid, (author, summary, parents, timestamp) in all_commits_info.items():
+        for full_oid, (_, _, _, parents, _) in all_commits_info.items():
             is_branch_start = False
             if parents:
                 parent_oid = parents[0]
                 parent_branch = oid_to_branch.get(parent_oid)
-                current_branch = oid_to_branch.get(short_oid)
+                current_branch = oid_to_branch.get(full_oid)
                 if parent_branch and current_branch and parent_branch != current_branch:
                     is_branch_start = True
-            is_branch_start_map[short_oid] = is_branch_start
+            is_branch_start_map[full_oid] = is_branch_start
 
-        # Count children for each commit
         commit_children = {}
-        for short_oid, (author, summary, parents, timestamp) in all_commits_info.items():
+        for full_oid, (_, _, _, parents, _) in all_commits_info.items():
             for parent_oid in parents:
                 if parent_oid not in commit_children:
                     commit_children[parent_oid] = []
-                commit_children[parent_oid].append(short_oid)
+                commit_children[parent_oid].append(full_oid)
 
-        # Build log data
         log_data = []
-        for short_oid, (author, summary, parents, timestamp) in all_commits_info.items():
-            branch = oid_to_branch.get(short_oid, 'main')
-            is_branch_start = is_branch_start_map.get(short_oid, False)
-            child_count = len(commit_children.get(short_oid, []))
-            log_data.append((short_oid, author, summary, branch, parents, is_branch_start, child_count, timestamp))
+        for full_oid, (short_oid, author, summary, parents, timestamp) in all_commits_info.items():
+            branch = oid_to_branch.get(full_oid, 'main')
+            is_branch_start = is_branch_start_map.get(full_oid, False)
+            child_count = len(commit_children.get(full_oid, []))
+            short_parents = [parent_oid[:8] for parent_oid in parents]
+            log_data.append((short_oid, author, summary, branch, short_parents, is_branch_start, child_count, timestamp))
 
-        # Sort by timestamp (newest first)
         log_data.sort(key=lambda x: x[7], reverse=True)
 
         current_commit = store.current_commit()
