@@ -40,6 +40,52 @@ def _log(msg: str) -> None:
     FreeCAD.Console.PrintMessage(msg if msg.endswith("\n") else msg + "\n")
 
 
+_RECENT_LOG_SCAN_PARAM = "RecentLogScanDirs"
+_MAX_RECENT_LOG_SCAN_DIRS = 8
+
+
+def _prefs():
+    return FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/freecad-git")
+
+
+def _recent_log_scan_dirs() -> list[str]:
+    raw = _prefs().GetString(_RECENT_LOG_SCAN_PARAM, "")
+    dirs = [d.strip() for d in raw.split("\n") if d.strip()]
+    return [d for d in dirs if Path(d).exists()]
+
+
+def _remember_log_scan_dir(path: str | Path) -> None:
+    selected = str(Path(path))
+    norm_selected = os.path.normcase(selected)
+    recent = [selected]
+    for existing in _recent_log_scan_dirs():
+        if os.path.normcase(existing) != norm_selected:
+            recent.append(existing)
+    _prefs().SetString(_RECENT_LOG_SCAN_PARAM, "\n".join(recent[:_MAX_RECENT_LOG_SCAN_DIRS]))
+
+
+def _discover_freecad_git_archives(root: Path) -> list[Path]:
+    archives = [
+        p for p in root.rglob("*.git")
+        if p.is_dir() and p.name.lower().endswith(".fcstd.git")
+    ]
+    return sorted(archives)
+
+
+def _doc_has_unsaved_changes(doc) -> bool:
+    if doc is None:
+        return False
+    try:
+        if hasattr(doc, "isModified"):
+            return bool(doc.isModified())
+    except Exception:
+        pass
+    try:
+        return bool(getattr(doc, "Modified", False))
+    except Exception:
+        return False
+
+
 class _CommitDialog(QtWidgets.QDialog):
     """Dialog for committing with branch selection and creation."""
 
@@ -347,22 +393,23 @@ class PullCommand:
                 _mainwindow(), "Git Pull", "No commits found in the repository.")
             return
 
-        reply = QtWidgets.QMessageBox.question(
-            _mainwindow(), "Git Pull",
-            "Pull HEAD into the current document?\n"
-            "Any unsaved in-memory changes will be discarded.",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
-        )
-        if reply != QtWidgets.QMessageBox.Yes:
-            _log(f"git pull: cancelled by user (reply={reply})")
-            return
-
         current_oid = _normalize_commit_oid(store, store.current_commit())
         target_oid = store.resolve_ref("HEAD")
         if current_oid and current_oid == target_oid:
             _log(f"git pull: already at {target_oid[:12]}, skipping reload")
             return
+
+        if _doc_has_unsaved_changes(doc):
+            reply = QtWidgets.QMessageBox.question(
+                _mainwindow(), "Git Pull",
+                "Pull HEAD into the current document?\n"
+                "Any unsaved in-memory changes will be discarded.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                _log(f"git pull: cancelled by user (reply={reply})")
+                return
 
         _log("git pull: confirmed, closing document")
 
@@ -401,13 +448,14 @@ class PullCommand:
 class _LogDialog(QtWidgets.QDialog):
     """Dialog for viewing and pulling commits from log with branch info."""
 
-    def __init__(self, parent, doc, store, log_data, branches, current_commit=None):
+    def __init__(self, parent, doc, store, log_data, branches, current_commit=None, cache_path=None):
         super().__init__(parent)
         self.doc = doc
         self.store = store
         self.log_data = log_data  # List of (short_oid, author, summary, branch, parents, is_branch_start, child_count, timestamp)
         self.branches = branches  # List of branch names
         self.current_commit = current_commit[:8] if current_commit else None
+        self.cache_path = Path(cache_path) if cache_path else (Path(doc.FileName) if doc and getattr(doc, "FileName", "") else None)
         self.selected_commit = None
         self.selected_branch = None
         self._line_to_commit = {}  # Map line number to commit info
@@ -547,32 +595,40 @@ class _LogDialog(QtWidgets.QDialog):
         self._current_highlighted_line = line_num
 
     def _on_pull(self):
-        if not self.selected_commit:
-            QtWidgets.QMessageBox.warning(self, "Git Pull", "Select a commit first.")
+        commit_ref = self.selected_commit or self.current_commit
+        branch_name = self.selected_branch or self.store.current_branch()
+
+        if not commit_ref:
+            head_oid = self.store.head_oid()
+            if head_oid:
+                commit_ref = head_oid[:8]
+
+        if not commit_ref:
+            QtWidgets.QMessageBox.warning(self, "Git Pull", "No commit available to pull.")
             return
+
         self.close()
-        self._do_pull(self.selected_commit, self.selected_branch)
+        self._do_pull(commit_ref, branch_name)
 
     def _do_pull(self, commit_ref: str, branch_name: str | None = None):
         """Pull the specified commit and track its branch when provided."""
-        if not self.doc or not self.doc.FileName:
+        if not self.cache_path:
             QtWidgets.QMessageBox.critical(
                 _mainwindow(), "Git Pull",
-                "Document was closed. Cannot pull.")
+                "No target .FCStd path available for this repository.")
             return
-        cache_path = Path(self.doc.FileName)
-        reply = QtWidgets.QMessageBox.question(
-            _mainwindow(), "Git Pull",
-            f"Pull {commit_ref}? Unsaved changes will be lost.",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
-        )
-        if reply != QtWidgets.QMessageBox.Yes:
-            return
+
+        cache_path = Path(self.cache_path)
 
         current_oid = _normalize_commit_oid(self.store, self.store.current_commit())
         target_oid = _normalize_commit_oid(self.store, commit_ref)
-        if current_oid and target_oid and current_oid == target_oid:
+        has_loaded_target_doc = bool(
+            self.doc
+            and getattr(self.doc, "FileName", "")
+            and Path(self.doc.FileName) == cache_path
+            and cache_path.exists()
+        )
+        if current_oid and target_oid and current_oid == target_oid and has_loaded_target_doc:
             if branch_name:
                 try:
                     self.store.switch_branch(branch_name)
@@ -582,8 +638,19 @@ class _LogDialog(QtWidgets.QDialog):
             _log(f"git pull: already at {target_oid[:12]}, skipping reload")
             return
 
-        doc_name = self.doc.Name
-        FreeCAD.closeDocument(doc_name)
+        had_open_doc = bool(self.doc and getattr(self.doc, "FileName", ""))
+        if had_open_doc and _doc_has_unsaved_changes(self.doc):
+            reply = QtWidgets.QMessageBox.question(
+                _mainwindow(), "Git Pull",
+                f"Pull {commit_ref}? Unsaved changes will be lost.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+        if had_open_doc:
+            FreeCAD.closeDocument(self.doc.Name)
+
         try:
             oid, touched = workflow.pull_doc(self.store, cache_path, ref=commit_ref)
             if branch_name:
@@ -593,9 +660,15 @@ class _LogDialog(QtWidgets.QDialog):
                 except Exception as branch_exc:
                     _log(f"git pull: WARNING - could not switch branch to {branch_name}: {branch_exc}")
             FreeCAD.openDocument(str(cache_path))
+            self.doc = FreeCAD.ActiveDocument
+            self.cache_path = cache_path
             _log(f"Pulled {oid[:12]}")
         except Exception as exc:
-            FreeCAD.openDocument(str(cache_path))
+            if had_open_doc:
+                try:
+                    FreeCAD.openDocument(str(cache_path))
+                except Exception:
+                    pass
             QtWidgets.QMessageBox.critical(_mainwindow(), "Git Pull", str(exc))
 
 
@@ -610,14 +683,92 @@ class LogCommand:
         }
 
     def IsActive(self):
-        doc = FreeCAD.ActiveDocument
-        if not doc or not doc.FileName:
-            return False
-        return _repo_path_for(doc).exists()
+        return True
+
+    def _cache_path_for_repo(self, repo_path: Path) -> Path:
+        return repo_path.with_suffix("") if repo_path.suffix == ".git" else repo_path
+
+    def _pick_repo_without_active_doc(self):
+        recent_dirs = _recent_log_scan_dirs()
+        browse_choice = "Browse folders..."
+        selected_root = None
+
+        if recent_dirs:
+            choices = recent_dirs + [browse_choice]
+            selected_root, ok = QtWidgets.QInputDialog.getItem(
+                _mainwindow(),
+                "Git Log",
+                "Select a folder to scan for FreeCAD git archives:",
+                choices,
+                0,
+                False,
+            )
+            if not ok:
+                return None
+            if selected_root == browse_choice:
+                selected_root = None
+
+        root_dir = selected_root
+        selected_from_recent = bool(selected_root)
+        if not root_dir:
+            start_dir = recent_dirs[0] if recent_dirs else str(Path.home())
+            root_dir = QtWidgets.QFileDialog.getExistingDirectory(
+                _mainwindow(),
+                "Select folder to scan for FreeCAD git archives",
+                start_dir,
+            )
+
+        if not root_dir:
+            return None
+
+        root = Path(root_dir)
+        repo_paths = _discover_freecad_git_archives(root)
+        if not repo_paths:
+            if selected_from_recent:
+                kept = [d for d in _recent_log_scan_dirs() if os.path.normcase(d) != os.path.normcase(root_dir)]
+                _prefs().SetString(_RECENT_LOG_SCAN_PARAM, "\n".join(kept[:_MAX_RECENT_LOG_SCAN_DIRS]))
+            QtWidgets.QMessageBox.information(
+                _mainwindow(), "Git Log",
+                "No FreeCAD git archives (*.FCStd.git) found in the selected folder.")
+            return None
+
+        labels = [f"{p.name}    [{p.parent}]" for p in repo_paths]
+        selected_label, ok = QtWidgets.QInputDialog.getItem(
+            _mainwindow(),
+            "Git Log",
+            "Select a FreeCAD git archive:",
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+
+        _remember_log_scan_dir(root_dir)
+        selected_index = labels.index(selected_label)
+        repo_path = repo_paths[selected_index]
+        return repo_path, self._cache_path_for_repo(repo_path)
 
     def Activated(self):
         doc = FreeCAD.ActiveDocument
-        store = GitStore(_repo_path_for(doc))
+        cache_path = None
+
+        if doc and doc.FileName:
+            repo_path = _repo_path_for(doc)
+            if not repo_path.exists():
+                QtWidgets.QMessageBox.information(
+                    _mainwindow(), "Git Log",
+                    "No git archive found for this document.")
+                return
+            cache_path = Path(doc.FileName)
+        else:
+            picked = self._pick_repo_without_active_doc()
+            if not picked:
+                return
+            repo_path, cache_path = picked
+            doc = None
+
+        store = GitStore(repo_path)
         if not store.has_head:
             QtWidgets.QMessageBox.information(
                 _mainwindow(), "Git Log", "No commits in the repository.")
@@ -708,7 +859,9 @@ class LogCommand:
         log_data.sort(key=lambda x: x[7], reverse=True)
 
         current_commit = store.current_commit()
-        dialog = _LogDialog(_mainwindow(), doc, store, log_data, branches, current_commit=current_commit)
+        dialog = _LogDialog(
+            _mainwindow(), doc, store, log_data, branches,
+            current_commit=current_commit, cache_path=cache_path)
         dialog.exec()
 
 
