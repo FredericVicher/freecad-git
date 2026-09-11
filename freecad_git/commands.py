@@ -289,6 +289,20 @@ class CommitCommand:
             QtWidgets.QMessageBox.critical(_mainwindow(), "Git Commit", str(exc))
             return
 
+        try:
+            if hasattr(FreeCADGui, "runCommand"):
+                FreeCADGui.runCommand("Std_Save")
+            else:
+                doc.save()
+
+            if hasattr(doc, "setModified"):
+                doc.setModified(False)
+        except Exception as exc:
+            _log(f"git commit: WARNING - post-commit save failed: {exc}")
+            QtWidgets.QMessageBox.warning(
+                _mainwindow(), "Git Commit",
+                f"Commit created, but post-commit save failed: {exc}")
+
         # Update CURRENT_COMMIT so next commit has correct parent
         # (Document in memory is already the correct state - it's what we just committed)
         try:
