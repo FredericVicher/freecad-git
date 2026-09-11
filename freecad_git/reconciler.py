@@ -70,7 +70,6 @@ def _files_referenced(object_elem: ET.Element) -> list[str]:
             file_attr = child.get("file")
             if file_attr:
                 refs.append(file_attr)
-                break
     return refs
 
 

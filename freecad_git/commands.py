@@ -343,6 +343,13 @@ class PullCommand:
         if reply != QtWidgets.QMessageBox.Yes:
             _log(f"git pull: cancelled by user (reply={reply})")
             return
+
+        current_oid = _normalize_commit_oid(store, store.current_commit())
+        target_oid = store.resolve_ref("HEAD")
+        if current_oid and current_oid == target_oid:
+            _log(f"git pull: already at {target_oid[:12]}, skipping reload")
+            return
+
         _log("git pull: confirmed, closing document")
 
         doc_name = doc.Name
@@ -547,6 +554,18 @@ class _LogDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.No,
         )
         if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        current_oid = _normalize_commit_oid(self.store, self.store.current_commit())
+        target_oid = _normalize_commit_oid(self.store, commit_ref)
+        if current_oid and target_oid and current_oid == target_oid:
+            if branch_name:
+                try:
+                    self.store.switch_branch(branch_name)
+                    _log(f"git pull: switched current branch to {branch_name}")
+                except Exception as branch_exc:
+                    _log(f"git pull: WARNING - could not switch branch to {branch_name}: {branch_exc}")
+            _log(f"git pull: already at {target_oid[:12]}, skipping reload")
             return
 
         doc_name = self.doc.Name

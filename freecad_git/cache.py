@@ -37,9 +37,8 @@ def read_document_xml(fcstd_path: str | Path) -> bytes:
 def parse_object_files(xml_bytes: bytes) -> list[ObjectFile]:
     """Return every (object, property, file) reference declared in a Document.xml.
 
-    Only properties whose XML body carries a `file="..."` attribute on a
-    direct child element are included (this is FreeCAD's encoding for
-    Part/Mesh/Points shape properties that spill to a side file).
+    Every direct child element carrying a `file="..."` attribute is included
+    (for example both the geometry sidecar and its optional `.Map.txt`).
     """
     root = ET.fromstring(xml_bytes)
     refs: list[ObjectFile] = []
@@ -53,7 +52,6 @@ def parse_object_files(xml_bytes: bytes) -> list[ObjectFile]:
                 file_attr = child.get("file")
                 if file_attr:
                     refs.append(ObjectFile(name, prop_name, file_attr))
-                    break
     return refs
 
 

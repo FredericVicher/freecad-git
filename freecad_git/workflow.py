@@ -64,10 +64,14 @@ def pull_doc(store: GitStore, cache_path: str | Path, ref: str = "HEAD"
     if cache_path.exists():
         old_xml = cache.read_document_xml(cache_path)
         old_obj_names = {r.object_name for r in cache.parse_object_files(old_xml)}
-        cache_blobs = cache.read_files_for(cache_path, old_obj_names)
+        cache_blobs = {
+            name: data
+            for name, data in cache.read_files_for(cache_path, old_obj_names).items()
+            if not name.endswith(".Map.txt")
+        }
         with zipfile.ZipFile(cache_path) as z:
             for n in z.namelist():
-                if n == "Document.xml" or n in cache_blobs:
+                if n == "Document.xml" or n in cache_blobs or n == "StringHasher" or n.endswith(".Map.txt"):
                     continue
                 aux_entries[n] = z.read(n)
 
