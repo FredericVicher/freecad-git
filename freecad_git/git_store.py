@@ -14,10 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+import FreeCAD  # type: ignore[import-not-found]
 import pygit2  # type: ignore[import-not-found]
 
 
 DEFAULT_BRANCH = "main"
+
+
+def _tr(text: str) -> str:
+    if hasattr(FreeCAD, "Qt") and hasattr(FreeCAD.Qt, "translate"):
+        return FreeCAD.Qt.translate("freecad_git", text)
+    return text
 
 
 @dataclass(frozen=True)
@@ -116,7 +123,12 @@ class GitStore:
             try:
                 target_oid = self.repo.references[current_ref].target
             except KeyError:
-                raise ValueError(f"Cannot resolve ref {from_ref} or current branch {current_ref}")
+                raise ValueError(
+                    _tr("Cannot resolve ref {from_ref} or current branch {current_ref}").format(
+                        from_ref=from_ref,
+                        current_ref=current_ref,
+                    )
+                )
 
         self.repo.references.create(branch_ref, str(target_oid))
         return branch_ref
@@ -125,7 +137,7 @@ class GitStore:
         """Switch to a different branch."""
         branch_ref = self._branch_ref(name)
         if branch_ref not in self.repo.references:
-            raise ValueError(f"Branch {name} does not exist")
+            raise ValueError(_tr("Branch {name} does not exist").format(name=name))
         self._set_current_branch_name(name)
         self.repo.set_head(branch_ref)
 

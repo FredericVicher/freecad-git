@@ -23,10 +23,16 @@ from . import cache, detector, reconciler
 from .git_store import Author, GitStore
 
 
+def _tr(text: str) -> str:
+    if hasattr(FreeCAD, "Qt") and hasattr(FreeCAD.Qt, "translate"):
+        return FreeCAD.Qt.translate("freecad_git", text)
+    return text
+
+
 def commit_doc(doc, store: GitStore, message: str, author: Author) -> str:
     """Persist the doc to its cache, then commit selected content to git."""
     if not doc.FileName:
-        raise ValueError("document has no cache file set; saveAs first")
+        raise ValueError(_tr("document has no cache file set; saveAs first"))
 
     doc.save()
     cache_path = Path(doc.FileName)

@@ -72,6 +72,26 @@ Restart FreeCAD.
 2. Choose whether Git should become the active workbench automatically at FreeCAD startup
 3. Restart FreeCAD for the change to take effect
 
+### Localization
+- User-facing strings in the workbench use FreeCAD/Qt translation hooks.
+- Starter translation sources are included in `freecad_git/translations`.
+- When translation files are present, `InitGui.py` registers that language path with FreeCAD at startup.
+- The workbench follows FreeCAD's current UI language automatically.
+- If no translation exists for the current language, English source strings are used.
+
+#### Included starter translations
+- `freecad_git/translations/freecad_git_fr.ts`
+- `freecad_git/translations/freecad_git_de.ts`
+
+These are source files for Qt Linguist. They must be compiled to `.qm` files before FreeCAD can use them at runtime.
+
+#### Adding a new language
+1. Create a Qt translation source file named `freecad_git_<locale>.ts` in `freecad_git/translations` (examples: `freecad_git_fr.ts`, `freecad_git_de.ts`).
+2. Add translations for the `freecad_git` context (all source strings are in English).
+3. Compile the `.ts` file into a `.qm` file with Qt Linguist tools (`lrelease`), e.g. `freecad_git_fr.qm`.
+4. Ship both `.ts` (optional, for maintenance) and `.qm` (required at runtime) in `freecad_git/translations`.
+5. Restart FreeCAD. The plugin will automatically use the same language as FreeCAD when a matching `.qm` exists.
+
 ## How It Works
 
 ### What Gets Stored

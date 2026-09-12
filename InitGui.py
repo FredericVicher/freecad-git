@@ -10,7 +10,29 @@ import FreeCADGui  # type: ignore[import-not-found]
 FreeCAD.Console.PrintMessage("git startup: InitGui loaded (freecad-git)\n")
 
 
+def _register_translations():
+    module_file = globals().get("__file__")
+    if module_file:
+        root_dir = os.path.dirname(os.path.abspath(module_file))
+    else:
+        try:
+            import freecad_git as _fcgit
+            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(_fcgit.__file__)))
+        except Exception:
+            root_dir = os.getcwd()
+
+    translations_dir = os.path.join(root_dir, "freecad_git", "translations")
+    if not os.path.isdir(translations_dir):
+        return
+    if hasattr(FreeCADGui, "addLanguagePath"):
+        FreeCADGui.addLanguagePath(translations_dir)
+    if hasattr(FreeCADGui, "updateLocale"):
+        FreeCADGui.updateLocale()
+
+
 class GitWorkbench(FreeCADGui.Workbench):
+    # Keep these as plain strings at class definition time so the workbench can
+    # still be created even if translation hooks are not yet ready.
     MenuText = "Git"
     ToolTip = "Selective git versioning for FreeCAD documents"
 
@@ -83,5 +105,6 @@ def _activate_git_on_startup_if_enabled():
         FreeCAD.Console.PrintMessage(f"git startup: init exception: {exc}\n")
 
 
+_register_translations()
 FreeCADGui.addWorkbench(GitWorkbench())
 _activate_git_on_startup_if_enabled()
