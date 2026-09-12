@@ -41,6 +41,7 @@ def _log(msg: str) -> None:
 
 
 _RECENT_LOG_SCAN_PARAM = "RecentLogScanDirs"
+_AUTO_START_WORKBENCH_PARAM = "AutoStartWorkbench"
 _MAX_RECENT_LOG_SCAN_DIRS = 8
 
 
@@ -865,7 +866,61 @@ class LogCommand:
         dialog.exec()
 
 
+class ToggleAutoStartCommand:
+    """Enable/disable automatic activation of the Git workbench at startup."""
+
+    def GetResources(self):
+        return {
+            "Pixmap": _icon("log.svg"),
+            "MenuText": "Toggle Git auto-start",
+            "ToolTip": "Enable or disable automatic Git workbench activation at FreeCAD startup",
+        }
+
+    def IsActive(self):
+        return True
+
+    def Activated(self):
+        enabled = _prefs().GetBool(_AUTO_START_WORKBENCH_PARAM, False)
+        if enabled:
+            reply = QtWidgets.QMessageBox.question(
+                _mainwindow(),
+                "Git Workbench Startup",
+                "Disable automatic Git workbench activation at FreeCAD startup?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+            _prefs().SetBool(_AUTO_START_WORKBENCH_PARAM, False)
+            _log("git startup: auto-start disabled")
+            QtWidgets.QMessageBox.information(
+                _mainwindow(),
+                "Git Workbench Startup",
+                "Git auto-start disabled."
+            )
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            _mainwindow(),
+            "Git Workbench Startup",
+            "Enable automatic Git workbench activation at FreeCAD startup?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        _prefs().SetBool(_AUTO_START_WORKBENCH_PARAM, True)
+        _log("git startup: auto-start enabled")
+        QtWidgets.QMessageBox.information(
+            _mainwindow(),
+            "Git Workbench Startup",
+            "Git auto-start enabled. It will apply on next FreeCAD startup."
+        )
+
+
 if hasattr(FreeCADGui, "addCommand"):
     FreeCADGui.addCommand("Git_Commit", CommitCommand())
     FreeCADGui.addCommand("Git_Pull", PullCommand())
     FreeCADGui.addCommand("Git_Log", LogCommand())
+    FreeCADGui.addCommand("Git_ToggleAutoStart", ToggleAutoStartCommand())

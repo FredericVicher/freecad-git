@@ -67,6 +67,11 @@ Restart FreeCAD.
 4. Click on any commit to select it
 5. Click **Pull this commit** to load that version
 
+### Startup Behavior
+1. In the **Git** menu, click **Toggle Git auto-start**
+2. Choose whether Git should become the active workbench automatically at FreeCAD startup
+3. Restart FreeCAD for the change to take effect
+
 ## How It Works
 
 ### What Gets Stored
