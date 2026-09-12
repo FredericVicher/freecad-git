@@ -15,9 +15,8 @@ A FreeCAD workbench that provides efficient version control for FreeCAD document
 ### Pull
 - **Load Any Commit**: Navigate your project history and pull any previous commit version
 - **Smart Visibility**: 
-  - Model objects and features are displayed
-  - Construction geometry (Sketches, Datums, Planes, Points, Axes) is hidden by default
-  - Visibility state is preserved for computed objects across recomputes
+  - The rebuilt document keeps the visibility state loaded from the `.FCStd` archive instead of forcing heuristic defaults
+  - Visibility is restored after recompute so derived objects keep their loaded state
 - **Selective Recalculation**: Only objects that changed or lack cached geometry are recomputed
 - **Non-Destructive**: Pulling a commit doesn't modify your Git history—only the current working document
 
@@ -105,7 +104,7 @@ When you pull a commit:
 2. Imported geometry is restored from cached .brp files
 3. Objects that changed or lack cached geometry are marked for recalculation
 4. FreeCAD's recompute engine calculates features with the new structure
-5. Visibility state is restored to match your previous session
+5. Visibility state loaded from the rebuilt archive is restored after recompute
 
 This design ensures:
 - **Minimal file size**: Only essential data is versioned
@@ -120,7 +119,6 @@ This design ensures:
 
 ## Known Limitations
 
-- **Construction axes** may remain visible in some cases after pull (minor rendering issue, does not affect functionality)
 - **Repository location**: Each document's repository is stored as `<filename>.git` next to the .FCStd file
 - **Single branch**: The workbench currently works on the `main` branch
 

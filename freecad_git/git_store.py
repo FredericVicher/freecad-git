@@ -10,6 +10,8 @@ normally; users never need to manipulate the working tree.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -224,7 +226,22 @@ class GitStore:
             ref = self._branch_ref(self._current_branch_name())
         commit = self.repo.revparse_single(ref).peel(pygit2.Commit)
         tree = commit.tree
-        xml = bytes(self.repo[tree["Document.xml"].id].data)
+        try:
+            xml = bytes(self.repo[tree["Document.xml"].id].data)
+        except KeyError:
+            legacy_fcstd_entries = [
+                entry for entry in tree
+                if entry.name.lower().endswith(".fcstd")
+            ]
+            if len(legacy_fcstd_entries) == 1:
+                return self._read_fcstd_blob_entry(legacy_fcstd_entries[0])
+            entries = ", ".join(sorted(entry.name for entry in tree)) or "(empty tree)"
+            raise ValueError(
+                _tr(
+                    "Commit {ref} does not contain Document.xml at the repository root. "
+                    "Top-level entries: {entries}"
+                ).format(ref=ref, entries=entries)
+            )
         blobs: dict[str, bytes] = {}
         for entry in tree:
             if entry.name == "Document.xml":
@@ -240,7 +257,34 @@ class GitStore:
         if ref is None:
             ref = self._branch_ref(self._current_branch_name())
         commit = self.repo.revparse_single(ref).peel(pygit2.Commit)
-        return bytes(self.repo[commit.tree["Document.xml"].id].data)
+        try:
+            return bytes(self.repo[commit.tree["Document.xml"].id].data)
+        except KeyError:
+            legacy_fcstd_entries = [
+                entry for entry in commit.tree
+                if entry.name.lower().endswith(".fcstd")
+            ]
+            if len(legacy_fcstd_entries) == 1:
+                xml, _ = self._read_fcstd_blob_entry(legacy_fcstd_entries[0])
+                return xml
+            entries = ", ".join(sorted(entry.name for entry in commit.tree)) or "(empty tree)"
+            raise ValueError(
+                _tr(
+                    "Commit {ref} does not contain Document.xml at the repository root. "
+                    "Top-level entries: {entries}"
+                ).format(ref=ref, entries=entries)
+            )
+
+    def _read_fcstd_blob_entry(self, entry) -> tuple[bytes, dict[str, bytes]]:
+        fcstd_bytes = bytes(self.repo[entry.id].data)
+        with zipfile.ZipFile(io.BytesIO(fcstd_bytes)) as z:
+            xml = z.read("Document.xml")
+            blobs = {
+                name: z.read(name)
+                for name in z.namelist()
+                if name != "Document.xml"
+            }
+        return xml, blobs
 
     def diff_paths_between(self, old_ref: str, new_ref: str) -> list[str]:
         """Return the list of tree entries that differ between two commits."""
