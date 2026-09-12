@@ -580,13 +580,14 @@ class _LogDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.doc = doc
         self.store = store
-        self.log_data = log_data  # List of (short_oid, author, summary, branch, parents, is_branch_start, child_count, timestamp)
+        self.log_data = log_data  # List of (short_oid, author, summary, branch, short_parents, is_branch_start, child_count, timestamp, full_oid, full_parents)
         self.branches = branches  # List of branch names
         self.current_commit = current_commit[:8] if current_commit else None
         self.cache_path = Path(cache_path) if cache_path else (Path(doc.FileName) if doc and getattr(doc, "FileName", "") else None)
         self.selected_commit = None
         self.selected_branch = None
-        self._line_to_commit = {}  # Map row index to commit info
+        self._line_to_commit = {}  # Map row index to (short_oid, branch, full_oid)
+        self._full_oid_to_parents = {}
         self._current_highlighted_line = None  # Track current highlighted row
         self.setWindowTitle(_tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Log")))
         self.setMinimumSize(1000, 400)
@@ -615,16 +616,18 @@ class _LogDialog(QtWidgets.QDialog):
         self.log_display.horizontalHeader().setSectionsClickable(False)
         self.log_display.horizontalHeader().setMinimumSectionSize(80)
 
-        for i, (short_oid, author, summary, branch, parents, is_branch_start, child_count, timestamp) in enumerate(self.log_data):
+        for i, entry in enumerate(self.log_data):
+            short_oid, author, summary, branch, short_parents, is_branch_start, child_count, timestamp, full_oid, full_parents = entry
             self.log_display.insertRow(i)
             checkout_dt = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
             branch_info = f"[{branch}]"
             parent_str = ""
-            if is_branch_start and parents:
-                parent_str = f" <- {parents[0]}"
+            if is_branch_start and short_parents:
+                parent_str = f" <- {short_parents[0]}"
                 branch_info = f"[{branch}{parent_str}]"
 
-            self._line_to_commit[i] = (short_oid, branch)
+            self._line_to_commit[i] = (short_oid, branch, full_oid)
+            self._full_oid_to_parents[full_oid] = full_parents
             row_items = [
                 QtWidgets.QTableWidgetItem(short_oid),
                 QtWidgets.QTableWidgetItem(checkout_dt),
@@ -632,8 +635,11 @@ class _LogDialog(QtWidgets.QDialog):
                 QtWidgets.QTableWidgetItem(author[:20]),
                 QtWidgets.QTableWidgetItem(summary),
             ]
+            row_items[0].setToolTip(full_oid)
+            if is_branch_start and short_parents:
+                row_items[2].setToolTip(f"{branch} <- {full_parents[0] if full_parents else short_parents[0]}")
             for col, item in enumerate(row_items):
-                item.setToolTip(item.text())
+                item.setToolTip(item.toolTip() or item.text())
                 self.log_display.setItem(i, col, item)
 
         self.log_display.resizeColumnsToContents()
@@ -722,19 +728,55 @@ class _LogDialog(QtWidgets.QDialog):
         return "\n".join(lines)
 
 
+    def _ancestor_rows_for_row(self, row_idx: int) -> set[int]:
+        """Follow the visible branch genealogy from the selected row downward in the log."""
+        if row_idx < 0 or row_idx >= len(self.log_data):
+            return set()
+
+        ancestors = {row_idx}
+        current_branch = self._line_to_commit.get(row_idx, (None, None, None))[1]
+        expected_source_oid = None
+
+        selected_entry = self.log_data[row_idx]
+        if selected_entry[5] and selected_entry[9]:
+            expected_source_oid = selected_entry[9][0]
+
+        for later_row in range(row_idx + 1, len(self.log_data)):
+            later_entry = self.log_data[later_row]
+            later_branch = later_entry[3]
+            later_full_oid = later_entry[8]
+            later_source = later_entry[9][0] if later_entry[5] and later_entry[9] else None
+
+            if later_branch == current_branch:
+                ancestors.add(later_row)
+                if later_source is not None:
+                    expected_source_oid = later_source
+                continue
+
+            if later_full_oid == expected_source_oid:
+                ancestors.add(later_row)
+                current_branch = later_branch
+                expected_source_oid = later_source
+                continue
+
+            if expected_source_oid is None:
+                continue
+
+            # Different branch and not the source we are following: ignore it.
+
+        return ancestors
+
     def _highlight_current_commit(self):
-        """Highlight the tracked current commit, if it exists in the log."""
+        """Highlight the tracked current commit and its ancestors, if it exists in the log."""
         if not self.current_commit:
             return
 
-        for row_idx, (short_oid, _) in self._line_to_commit.items():
-            if short_oid == self.current_commit:
+        for row_idx, record in self._line_to_commit.items():
+            short_oid = record[0]
+            full_oid = record[2]
+            if short_oid == self.current_commit or full_oid and full_oid.startswith(self.current_commit):
                 self.log_display.selectRow(row_idx)
-                for col in range(self.log_display.columnCount()):
-                    item = self.log_display.item(row_idx, col)
-                    if item is not None:
-                        bg = QtGui.QBrush(QtGui.QColor(120, 180, 120))
-                        item.setBackground(bg)
+                self._highlight_line(row_idx, self._ancestor_rows_for_row(row_idx))
                 self._current_highlighted_line = row_idx
                 return
 
@@ -743,7 +785,7 @@ class _LogDialog(QtWidgets.QDialog):
         row = self.log_display.currentRow()
         if row < 0 or row not in self._line_to_commit:
             return
-        short_oid, branch = self._line_to_commit[row]
+        short_oid, branch, full_oid = self._line_to_commit[row]
         self.selected_commit = short_oid
         self.selected_branch = branch
         self.info_label.setText(
@@ -752,25 +794,29 @@ class _LogDialog(QtWidgets.QDialog):
                 branch=branch,
             )
         )
-        self._highlight_line(row)
+        self._highlight_line(row, self._ancestor_rows_for_row(row))
 
-    def _highlight_line(self, line_num):
-        """Highlight the selected row and remove previous highlight."""
+    def _highlight_line(self, line_num, ancestor_rows=None):
+        """Highlight the selected row and its ancestors while preserving the current commit color."""
+        if ancestor_rows is None:
+            ancestor_rows = set()
+
         for row_idx in range(self.log_display.rowCount()):
             for col in range(self.log_display.columnCount()):
                 item = self.log_display.item(row_idx, col)
                 if item is None:
                     continue
-                if row_idx == self._current_highlighted_line and row_idx != line_num:
+                if row_idx == self._current_highlighted_line and row_idx != line_num and row_idx not in ancestor_rows:
                     item.setBackground(QtGui.QBrush())
                 elif row_idx == line_num:
-                    item.setBackground(QtGui.QBrush(QtGui.QColor(100, 150, 200)))
-
-        if self.current_commit and self.log_display.item(line_num, 0) and self.log_display.item(line_num, 0).text() == self.current_commit:
-            for col in range(self.log_display.columnCount()):
-                item = self.log_display.item(line_num, col)
-                if item is not None:
-                    item.setBackground(QtGui.QBrush(QtGui.QColor(120, 180, 120)))
+                    if self.current_commit and self.log_display.item(line_num, 0) and self.log_display.item(line_num, 0).text() == self.current_commit:
+                        item.setBackground(QtGui.QBrush(QtGui.QColor(120, 180, 120)))
+                    else:
+                        item.setBackground(QtGui.QBrush(QtGui.QColor(100, 150, 200)))
+                elif row_idx in ancestor_rows:
+                    item.setBackground(QtGui.QBrush(QtGui.QColor(220, 180, 100)))
+                else:
+                    item.setBackground(QtGui.QBrush())
 
         self._current_highlighted_line = line_num
 
@@ -1114,7 +1160,7 @@ class LogCommand:
             is_branch_start = is_branch_start_map.get(full_oid, False)
             child_count = len(commit_children.get(full_oid, []))
             short_parents = [parent_oid[:8] for parent_oid in parents]
-            log_data.append((short_oid, author, summary, branch, short_parents, is_branch_start, child_count, timestamp))
+            log_data.append((short_oid, author, summary, branch, short_parents, is_branch_start, child_count, timestamp, full_oid, parents))
 
         log_data.sort(key=lambda x: x[7], reverse=True)
 
