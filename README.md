@@ -62,7 +62,7 @@ Restart FreeCAD.
 ### View Commit History
 1. Click **Log** to open the commit history dialog
 2. If no .FCStd document is active, pick a recent scan folder (or browse), then select a `*.FCStd.git` archive
-3. The current loaded commit is shown with a blue background
+3. The current loaded commit is shown with a blue background and its ancestors are highlighted in maroon.
 4. Click on any commit to select it
 5. Click **Pull this commit** to load that version
 
@@ -120,7 +120,7 @@ This design ensures:
 ## Known Limitations
 
 - **Repository location**: Each document's repository is stored as `<filename>.git` next to the .FCStd file
-- **Single branch**: The workbench currently works on the `main` branch
+- **Branch support**: Multiple branches can be created and used; branch ancestry is reflected in the Git log view
 
 ## Architecture Overview
 
