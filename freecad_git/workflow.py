@@ -23,10 +23,16 @@ from . import cache, detector, reconciler
 from .git_store import Author, GitStore
 
 
+def _tr(text: str) -> str:
+    if hasattr(FreeCAD, "Qt") and hasattr(FreeCAD.Qt, "translate"):
+        return FreeCAD.Qt.translate("freecad_git", text)
+    return text
+
+
 def commit_doc(doc, store: GitStore, message: str, author: Author) -> str:
     """Persist the doc to its cache, then commit selected content to git."""
     if not doc.FileName:
-        raise ValueError("document has no cache file set; saveAs first")
+        raise ValueError(_tr("document has no cache file set; saveAs first"))
 
     doc.save()
     cache_path = Path(doc.FileName)
@@ -64,10 +70,14 @@ def pull_doc(store: GitStore, cache_path: str | Path, ref: str = "HEAD"
     if cache_path.exists():
         old_xml = cache.read_document_xml(cache_path)
         old_obj_names = {r.object_name for r in cache.parse_object_files(old_xml)}
-        cache_blobs = cache.read_files_for(cache_path, old_obj_names)
+        cache_blobs = {
+            name: data
+            for name, data in cache.read_files_for(cache_path, old_obj_names).items()
+            if not name.endswith(".Map.txt")
+        }
         with zipfile.ZipFile(cache_path) as z:
             for n in z.namelist():
-                if n == "Document.xml" or n in cache_blobs:
+                if n == "Document.xml" or n in cache_blobs or n == "StringHasher" or n.endswith(".Map.txt"):
                     continue
                 aux_entries[n] = z.read(n)
 
@@ -109,23 +119,17 @@ def pull_doc(store: GitStore, cache_path: str | Path, ref: str = "HEAD"
     # Open the rebuilt cache and force recompute where needed.
     doc = FreeCAD.openDocument(str(cache_path))
     try:
-        # After loading from zip, make all objects visible except construction helpers
-        for obj in doc.Objects:
-            if hasattr(obj, 'ViewObject') and obj.ViewObject:
-                # Hide construction geometry: Sketches, Datums, Planes, Points, Axes
-                should_hide = any(x in obj.TypeId for x in ['Sketch', 'Datum', 'Plane', 'Point', 'Axis'])
-                obj.ViewObject.Visibility = not should_hide
-
         kind_of = {c.name: c.kind for c in detector.classify_document(doc)}
         touched: list[str] = []
 
-        # Save visibility of COMPUTED objects before recompute (they will be recalculated)
-        computed_visibility = {}
-        for name, kind in kind_of.items():
-            if kind is detector.Kind.COMPUTED:
-                obj = doc.getObject(name)
-                if obj and hasattr(obj, 'ViewObject') and obj.ViewObject:
-                    computed_visibility[name] = obj.ViewObject.Visibility
+        # Preserve the visibility state that FreeCAD loaded from the rebuilt
+        # archive instead of forcing heuristic defaults for construction
+        # helpers. This keeps the true view state for retained objects and lets
+        # FreeCAD choose sensible defaults for any new ones.
+        loaded_visibility = {}
+        for obj in doc.Objects:
+            if hasattr(obj, "ViewObject") and obj.ViewObject:
+                loaded_visibility[obj.Name] = obj.ViewObject.Visibility
 
         # Targets: changed objects from the diff + objects without a .brp source.
         targets: set[str] = set(missing_brp_owners)
@@ -146,10 +150,11 @@ def pull_doc(store: GitStore, cache_path: str | Path, ref: str = "HEAD"
 
         if touched:
             doc.recompute()
-            # Restore visibility for COMPUTED objects after recompute
-            for name, was_visible in computed_visibility.items():
+            # Recompute may reset view-provider state for derived objects; put
+            # back the visibility that was loaded from the archive.
+            for name, was_visible in loaded_visibility.items():
                 obj = doc.getObject(name)
-                if obj and hasattr(obj, 'ViewObject') and obj.ViewObject:
+                if obj and hasattr(obj, "ViewObject") and obj.ViewObject:
                     obj.ViewObject.Visibility = was_visible
             doc.save()
     finally:

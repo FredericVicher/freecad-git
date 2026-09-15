@@ -15,9 +15,8 @@ A FreeCAD workbench that provides efficient version control for FreeCAD document
 ### Pull
 - **Load Any Commit**: Navigate your project history and pull any previous commit version
 - **Smart Visibility**: 
-  - Model objects and features are displayed
-  - Construction geometry (Sketches, Datums, Planes, Points, Axes) is hidden by default
-  - Visibility state is preserved for computed objects across recomputes
+  - The rebuilt document keeps the visibility state loaded from the `.FCStd` archive instead of forcing heuristic defaults
+  - Visibility is restored after recompute so derived objects keep their loaded state
 - **Selective Recalculation**: Only objects that changed or lack cached geometry are recomputed
 - **Non-Destructive**: Pulling a commit doesn't modify your Git history—only the current working document
 
@@ -62,9 +61,35 @@ Restart FreeCAD.
 
 ### View Commit History
 1. Click **Log** to open the commit history dialog
-2. The current loaded commit is shown with a blue background
-3. Click on any commit to select it
-4. Click **Pull this commit** to load that version
+2. If no .FCStd document is active, pick a recent scan folder (or browse), then select a `*.FCStd.git` archive
+3. The current loaded commit is shown with a blue background and its ancestors are highlighted in maroon.
+4. Click on any commit to select it
+5. Click **Pull this commit** to load that version
+
+### Startup Behavior
+1. In the **Git** menu, click **Toggle Git auto-start**
+2. Choose whether Git should become the active workbench automatically at FreeCAD startup
+3. Restart FreeCAD for the change to take effect
+
+### Localization
+- User-facing strings in the workbench use FreeCAD/Qt translation hooks.
+- Starter translation sources are included in `freecad_git/translations`.
+- When translation files are present, `InitGui.py` registers that language path with FreeCAD at startup.
+- The workbench follows FreeCAD's current UI language automatically.
+- If no translation exists for the current language, English source strings are used.
+
+#### Included starter translations
+- `freecad_git/translations/freecad_git_fr.ts`
+- `freecad_git/translations/freecad_git_de.ts`
+
+These are source files for Qt Linguist. They must be compiled to `.qm` files before FreeCAD can use them at runtime.
+
+#### Adding a new language
+1. Create a Qt translation source file named `freecad_git_<locale>.ts` in `freecad_git/translations` (examples: `freecad_git_fr.ts`, `freecad_git_de.ts`).
+2. Add translations for the `freecad_git` context (all source strings are in English).
+3. Compile the `.ts` file into a `.qm` file with Qt Linguist tools (`lrelease`), e.g. `freecad_git_fr.qm`.
+4. Ship both `.ts` (optional, for maintenance) and `.qm` (required at runtime) in `freecad_git/translations`.
+5. Restart FreeCAD. The plugin will automatically use the same language as FreeCAD when a matching `.qm` exists.
 
 ## How It Works
 
@@ -79,7 +104,7 @@ When you pull a commit:
 2. Imported geometry is restored from cached .brp files
 3. Objects that changed or lack cached geometry are marked for recalculation
 4. FreeCAD's recompute engine calculates features with the new structure
-5. Visibility state is restored to match your previous session
+5. Visibility state loaded from the rebuilt archive is restored after recompute
 
 This design ensures:
 - **Minimal file size**: Only essential data is versioned
@@ -94,9 +119,8 @@ This design ensures:
 
 ## Known Limitations
 
-- **Construction axes** may remain visible in some cases after pull (minor rendering issue, does not affect functionality)
 - **Repository location**: Each document's repository is stored as `<filename>.git` next to the .FCStd file
-- **Single branch**: The workbench currently works on the `main` branch
+- **Branch support**: Multiple branches can be created and used; branch ancestry is reflected in the Git log view
 
 ## Architecture Overview
 

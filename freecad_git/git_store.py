@@ -10,14 +10,23 @@ normally; users never need to manipulate the working tree.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+import FreeCAD  # type: ignore[import-not-found]
 import pygit2  # type: ignore[import-not-found]
 
 
 DEFAULT_BRANCH = "main"
+
+
+def _tr(text: str) -> str:
+    if hasattr(FreeCAD, "Qt") and hasattr(FreeCAD.Qt, "translate"):
+        return FreeCAD.Qt.translate("freecad_git", text)
+    return text
 
 
 @dataclass(frozen=True)
@@ -116,7 +125,12 @@ class GitStore:
             try:
                 target_oid = self.repo.references[current_ref].target
             except KeyError:
-                raise ValueError(f"Cannot resolve ref {from_ref} or current branch {current_ref}")
+                raise ValueError(
+                    _tr("Cannot resolve ref {from_ref} or current branch {current_ref}").format(
+                        from_ref=from_ref,
+                        current_ref=current_ref,
+                    )
+                )
 
         self.repo.references.create(branch_ref, str(target_oid))
         return branch_ref
@@ -125,7 +139,7 @@ class GitStore:
         """Switch to a different branch."""
         branch_ref = self._branch_ref(name)
         if branch_ref not in self.repo.references:
-            raise ValueError(f"Branch {name} does not exist")
+            raise ValueError(_tr("Branch {name} does not exist").format(name=name))
         self._set_current_branch_name(name)
         self.repo.set_head(branch_ref)
 
@@ -212,7 +226,22 @@ class GitStore:
             ref = self._branch_ref(self._current_branch_name())
         commit = self.repo.revparse_single(ref).peel(pygit2.Commit)
         tree = commit.tree
-        xml = bytes(self.repo[tree["Document.xml"].id].data)
+        try:
+            xml = bytes(self.repo[tree["Document.xml"].id].data)
+        except KeyError:
+            legacy_fcstd_entries = [
+                entry for entry in tree
+                if entry.name.lower().endswith(".fcstd")
+            ]
+            if len(legacy_fcstd_entries) == 1:
+                return self._read_fcstd_blob_entry(legacy_fcstd_entries[0])
+            entries = ", ".join(sorted(entry.name for entry in tree)) or "(empty tree)"
+            raise ValueError(
+                _tr(
+                    "Commit {ref} does not contain Document.xml at the repository root. "
+                    "Top-level entries: {entries}"
+                ).format(ref=ref, entries=entries)
+            )
         blobs: dict[str, bytes] = {}
         for entry in tree:
             if entry.name == "Document.xml":
@@ -228,7 +257,34 @@ class GitStore:
         if ref is None:
             ref = self._branch_ref(self._current_branch_name())
         commit = self.repo.revparse_single(ref).peel(pygit2.Commit)
-        return bytes(self.repo[commit.tree["Document.xml"].id].data)
+        try:
+            return bytes(self.repo[commit.tree["Document.xml"].id].data)
+        except KeyError:
+            legacy_fcstd_entries = [
+                entry for entry in commit.tree
+                if entry.name.lower().endswith(".fcstd")
+            ]
+            if len(legacy_fcstd_entries) == 1:
+                xml, _ = self._read_fcstd_blob_entry(legacy_fcstd_entries[0])
+                return xml
+            entries = ", ".join(sorted(entry.name for entry in commit.tree)) or "(empty tree)"
+            raise ValueError(
+                _tr(
+                    "Commit {ref} does not contain Document.xml at the repository root. "
+                    "Top-level entries: {entries}"
+                ).format(ref=ref, entries=entries)
+            )
+
+    def _read_fcstd_blob_entry(self, entry) -> tuple[bytes, dict[str, bytes]]:
+        fcstd_bytes = bytes(self.repo[entry.id].data)
+        with zipfile.ZipFile(io.BytesIO(fcstd_bytes)) as z:
+            xml = z.read("Document.xml")
+            blobs = {
+                name: z.read(name)
+                for name in z.namelist()
+                if name != "Document.xml"
+            }
+        return xml, blobs
 
     def diff_paths_between(self, old_ref: str, new_ref: str) -> list[str]:
         """Return the list of tree entries that differ between two commits."""
