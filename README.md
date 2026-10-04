@@ -62,9 +62,17 @@ Restart FreeCAD.
 ### View Commit History
 1. Click **Log** to open the commit history dialog
 2. If no .FCStd document is active, pick a recent scan folder (or browse), then select a `*.FCStd.git` archive
-3. The current loaded commit is shown with a blue background and its ancestors are highlighted in maroon.
+3. The current loaded commit is shown with a configurable color, and ancestors are highlighted in another configurable color
 4. Click on any commit to select it
 5. Click **Pull this commit** to load that version
+
+### Customizing Log Colors
+The log window colors are stored in FreeCAD user parameters under `User parameter:BaseApp/Preferences/Mod/freecad-git`.
+You can adjust these values with the FreeCAD Preferences/Properties editor if needed for accessibility or colorblind-friendly palettes:
+- `SelectedCommitColor` (default: `#6496C8`)
+- `CurrentCommitColor` (default: `#78B478`)
+- `AncestorCommitColor` (default: `#DCC064`)
+Values can be written as hex colors (`#RRGGBB`) or as `R,G,B` triplets.
 
 ### Startup Behavior
 1. In the **Git** menu, click **Toggle Git auto-start**

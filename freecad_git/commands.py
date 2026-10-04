@@ -49,13 +49,110 @@ def _tr(text: str) -> str:
 
 _RECENT_LOG_SCAN_PARAM = "RecentLogScanDirs"
 _RECENT_LOG_REPO_PARAM = "RecentLogRepos"
-_AUTO_START_WORKBENCH_PARAM = "AutoStartWorkbench"
+_PREVIOUS_AUTOLOAD_MODULE_PARAM = "PreviousAutoloadModule"
+_GENERAL_PREFS_PATH = "User parameter:BaseApp/Preferences/General"
+_WORKBENCH_PREFS_PATH = "User parameter:BaseApp/Preferences/Workbenches"
+_GENERAL_AUTOLOAD_KEY = "AutoloadModule"
+_WORKBENCH_DEFAULT_KEY = "DefaultWorkbench"
+_GIT_WORKBENCH_IDS = frozenset({"Git", "GitWorkbench"})
+_SELECTED_COMMIT_COLOR_PARAM = "SelectedCommitColor"
+_CURRENT_COMMIT_COLOR_PARAM = "CurrentCommitColor"
+_ANCESTOR_COMMIT_COLOR_PARAM = "AncestorCommitColor"
 _MAX_RECENT_LOG_SCAN_DIRS = 8
 _MAX_RECENT_LOG_REPOS = 16
 
 
 def _prefs():
     return FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/freecad-git")
+
+
+def _general_prefs():
+    return FreeCAD.ParamGet(_GENERAL_PREFS_PATH)
+
+
+def _workbench_prefs():
+    return FreeCAD.ParamGet(_WORKBENCH_PREFS_PATH)
+
+
+def _startup_workbench_values() -> tuple[str, str]:
+    """Return (default_workbench, autoload_module)."""
+    default_wb = _workbench_prefs().GetString(_WORKBENCH_DEFAULT_KEY, "").strip()
+    autoload = _general_prefs().GetString(_GENERAL_AUTOLOAD_KEY, "").strip()
+    return default_wb, autoload
+
+
+def _is_git_workbench_name(name: str | None) -> bool:
+    return (name or "").strip() in _GIT_WORKBENCH_IDS
+
+
+def _effective_git_workbench_name() -> str:
+    """Return the best workbench identifier to persist in startup preferences."""
+    for candidate in _startup_workbench_values():
+        if _is_git_workbench_name(candidate):
+            return candidate
+
+    if hasattr(FreeCADGui, "listWorkbenches"):
+        try:
+            names = set(FreeCADGui.listWorkbenches().keys())
+            if "GitWorkbench" in names:
+                return "GitWorkbench"
+            if "Git" in names:
+                return "Git"
+        except Exception:
+            pass
+
+    # Conservative fallback matching FreeCAD's common Python workbench id pattern.
+    return "GitWorkbench"
+
+
+def _is_git_autostart_enabled() -> bool:
+    default_wb, autoload = _startup_workbench_values()
+    return _is_git_workbench_name(default_wb) or _is_git_workbench_name(autoload)
+
+
+def _set_startup_workbench(module_name: str) -> None:
+    """Set both startup-related keys to keep FreeCAD startup prefs consistent."""
+    _workbench_prefs().SetString(_WORKBENCH_DEFAULT_KEY, module_name)
+    _general_prefs().SetString(_GENERAL_AUTOLOAD_KEY, module_name)
+
+
+def _parse_qcolor(value: str | None, default_hex: str) -> QtGui.QColor:
+    """Read a color from preferences, accepting hex (#RRGGBB) or CSV RGB values."""
+    candidate = (value or default_hex).strip()
+    try:
+        color = QtGui.QColor(candidate)
+        if color.isValid():
+            return color
+    except Exception:
+        pass
+
+    clean = candidate.replace(";", ",").replace(" ", "")
+    if clean.startswith("#"):
+        try:
+            color = QtGui.QColor(clean)
+            if color.isValid():
+                return color
+        except Exception:
+            pass
+    if "," in clean:
+        parts = [part for part in clean.split(",") if part]
+        if len(parts) == 3:
+            try:
+                rgb = [int(part) for part in parts]
+                if all(0 <= channel <= 255 for channel in rgb):
+                    return QtGui.QColor(*rgb)
+            except ValueError:
+                pass
+    return QtGui.QColor(default_hex)
+
+
+def _log_highlight_colors() -> dict[str, QtGui.QColor]:
+    prefs = _prefs()
+    return {
+        "selected": _parse_qcolor(prefs.GetString(_SELECTED_COMMIT_COLOR_PARAM, "#6496C8"), "#6496C8"),
+        "current": _parse_qcolor(prefs.GetString(_CURRENT_COMMIT_COLOR_PARAM, "#78B478"), "#78B478"),
+        "ancestor": _parse_qcolor(prefs.GetString(_ANCESTOR_COMMIT_COLOR_PARAM, "#DCC064"), "#DCC064"),
+    }
 
 
 def _recent_log_scan_dirs() -> list[str]:
@@ -801,6 +898,7 @@ class _LogDialog(QtWidgets.QDialog):
         if ancestor_rows is None:
             ancestor_rows = set()
 
+        colors = _log_highlight_colors()
         for row_idx in range(self.log_display.rowCount()):
             for col in range(self.log_display.columnCount()):
                 item = self.log_display.item(row_idx, col)
@@ -810,11 +908,11 @@ class _LogDialog(QtWidgets.QDialog):
                     item.setBackground(QtGui.QBrush())
                 elif row_idx == line_num:
                     if self.current_commit and self.log_display.item(line_num, 0) and self.log_display.item(line_num, 0).text() == self.current_commit:
-                        item.setBackground(QtGui.QBrush(QtGui.QColor(120, 180, 120)))
+                        item.setBackground(QtGui.QBrush(colors["current"]))
                     else:
-                        item.setBackground(QtGui.QBrush(QtGui.QColor(100, 150, 200)))
+                        item.setBackground(QtGui.QBrush(colors["selected"]))
                 elif row_idx in ancestor_rows:
-                    item.setBackground(QtGui.QBrush(QtGui.QColor(220, 180, 100)))
+                    item.setBackground(QtGui.QBrush(colors["ancestor"]))
                 else:
                     item.setBackground(QtGui.QBrush())
 
@@ -1190,57 +1288,31 @@ class ToggleAutoStartCommand:
         return True
 
     def Activated(self):
-        enabled = _prefs().GetBool(_AUTO_START_WORKBENCH_PARAM, False)
+        prefs = _prefs()
+        enabled = _is_git_autostart_enabled()
         if enabled:
-            reply = QtWidgets.QMessageBox.question(
-                _mainwindow(),
-                _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-                _tr(
-                    QtCore.QT_TRANSLATE_NOOP(
-                        "freecad_git",
-                        "Disable automatic Git workbench activation at FreeCAD startup?",
-                    )
-                ),
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if reply != QtWidgets.QMessageBox.Yes:
-                return
-            _prefs().SetBool(_AUTO_START_WORKBENCH_PARAM, False)
-            _log("git startup: auto-start disabled")
-            QtWidgets.QMessageBox.information(
-                _mainwindow(),
-                _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-                _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git auto-start disabled.")),
+            previous_module = prefs.GetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, "")
+            if _is_git_workbench_name(previous_module):
+                # Legacy bad state: never restore Git when disabling Git auto-start.
+                previous_module = ""
+            _set_startup_workbench(previous_module)
+            _log(
+                "git startup: auto-start disabled "
+                f"(DefaultWorkbench/AutoloadModule restored to '{previous_module}')"
             )
             return
 
-        reply = QtWidgets.QMessageBox.question(
-            _mainwindow(),
-            _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-            _tr(
-                QtCore.QT_TRANSLATE_NOOP(
-                    "freecad_git",
-                    "Enable automatic Git workbench activation at FreeCAD startup?",
-                )
-            ),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.Yes,
-        )
-        if reply != QtWidgets.QMessageBox.Yes:
-            return
+        default_wb, autoload = _startup_workbench_values()
+        current_module = default_wb or autoload
 
-        _prefs().SetBool(_AUTO_START_WORKBENCH_PARAM, True)
-        _log("git startup: auto-start enabled")
-        QtWidgets.QMessageBox.information(
-            _mainwindow(),
-            _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-            _tr(
-                QtCore.QT_TRANSLATE_NOOP(
-                    "freecad_git",
-                    "Git auto-start enabled. It will apply on next FreeCAD startup.",
-                )
-            ),
+        if current_module and not _is_git_workbench_name(current_module):
+            prefs.SetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, current_module)
+
+        target_git_module = _effective_git_workbench_name()
+        _set_startup_workbench(target_git_module)
+        _log(
+            "git startup: auto-start enabled "
+            f"(DefaultWorkbench/AutoloadModule set to '{target_git_module}', previous='{current_module}')"
         )
 
 
