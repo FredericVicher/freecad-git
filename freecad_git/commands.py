@@ -146,12 +146,23 @@ def _parse_qcolor(value: str | None, default_hex: str) -> QtGui.QColor:
     return QtGui.QColor(default_hex)
 
 
+def _pref_color(prefs, name: str, default_hex: str) -> QtGui.QColor:
+    """Read a color saved by a Gui::PrefColorButton (unsigned 0xRRGGBBAA), with legacy string fallback."""
+    default = QtGui.QColor(default_hex)
+    default_packed = (default.red() << 24) | (default.green() << 16) | (default.blue() << 8) | 0xFF
+    packed = prefs.GetUnsigned(name, default_packed)
+    if packed != default_packed:
+        return QtGui.QColor((packed >> 24) & 0xFF, (packed >> 16) & 0xFF, (packed >> 8) & 0xFF)
+    legacy = prefs.GetString(name, "")
+    return _parse_qcolor(legacy, default_hex) if legacy else default
+
+
 def _log_highlight_colors() -> dict[str, QtGui.QColor]:
     prefs = _prefs()
     return {
-        "selected": _parse_qcolor(prefs.GetString(_SELECTED_COMMIT_COLOR_PARAM, "#6496C8"), "#6496C8"),
-        "current": _parse_qcolor(prefs.GetString(_CURRENT_COMMIT_COLOR_PARAM, "#78B478"), "#78B478"),
-        "ancestor": _parse_qcolor(prefs.GetString(_ANCESTOR_COMMIT_COLOR_PARAM, "#DCC064"), "#DCC064"),
+        "selected": _pref_color(prefs, _SELECTED_COMMIT_COLOR_PARAM, "#6496C8"),
+        "current": _pref_color(prefs, _CURRENT_COMMIT_COLOR_PARAM, "#78B478"),
+        "ancestor": _pref_color(prefs, _ANCESTOR_COMMIT_COLOR_PARAM, "#DCC064"),
     }
 
 
@@ -745,10 +756,20 @@ class _LogDialog(QtWidgets.QDialog):
             header.setSectionResizeMode(idx, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.log_display.columnCount() - 1, QtWidgets.QHeaderView.ResizeToContents)
         total_width = sum(self.log_display.columnWidth(c) for c in range(self.log_display.columnCount())) + 40
-        if total_width > 1500:
-            self.resize(min(total_width, 1500), self.height())
-        else:
-            self.resize(max(1000, total_width), self.height())
+        width = min(total_width, 1500) if total_width > 1500 else max(1000, total_width)
+        row_count = self.log_display.rowCount()
+        row_height = self.log_display.verticalHeader().defaultSectionSize()
+        table_height = (
+            row_height * row_count
+            + self.log_display.horizontalHeader().height()
+            + self.log_display.horizontalScrollBar().sizeHint().height()
+            + 2 * self.log_display.frameWidth()
+        )
+        # Room for the info label, buttons, margins and the title bar.
+        wanted_height = table_height + 160
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        max_height = int(screen.availableGeometry().height() * 0.95) if screen else 900
+        self.resize(width, max(self.minimumHeight(), min(wanted_height, max_height)))
         self.log_display.setMinimumWidth(max(700, min(total_width, 1400)))
         layout.addWidget(self.log_display)
 
@@ -917,6 +938,20 @@ class _LogDialog(QtWidgets.QDialog):
                     item.setBackground(QtGui.QBrush())
 
         self._current_highlighted_line = line_num
+        self._apply_selection_color(line_num, colors)
+
+    def _apply_selection_color(self, line_num, colors):
+        """Qt paints selected rows with its own highlight, so override it with the preference color."""
+        first = self.log_display.item(line_num, 0) if line_num is not None and line_num >= 0 else None
+        if first is None:
+            return
+        is_current = bool(self.current_commit) and first.text() == self.current_commit
+        color = colors["current"] if is_current else colors["selected"]
+        text = "#000000" if color.lightness() > 128 else "#FFFFFF"
+        self.log_display.setStyleSheet(
+            "QTableWidget::item:selected, QTableWidget::item:selected:!active "
+            f"{{ background-color: {color.name()}; color: {text}; }}"
+        )
 
     def _on_pull(self):
         commit_ref = self.selected_commit or self.current_commit
@@ -1068,12 +1103,54 @@ class LogCommand:
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
 
+        self._fit_dialog_to_list(dialog, list_widget)
+
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         selected = list_widget.currentItem()
         if selected is None:
             return None
         return Path(str(selected.data(QtCore.Qt.UserRole)))
+
+    @staticmethod
+    def _fit_dialog_to_list(dialog, list_widget) -> None:
+        """Size the dialog to show every row, capped to 90% of the screen height."""
+        count = list_widget.count()
+        row_height = list_widget.sizeHintForRow(0) if count else 20
+        screen = dialog.screen() or QtWidgets.QApplication.primaryScreen()
+        max_height = int(screen.availableGeometry().height() * 0.9) if screen else 800
+        chrome = 120
+        wanted = row_height * count + 2 * list_widget.frameWidth() + chrome
+        width = max(560, list_widget.sizeHintForColumn(0) + 80)
+        dialog.resize(width, min(wanted, max_height))
+
+    def _select_from_list(self, title: str, label: str, choices: list[str]) -> str | None:
+        """Show all choices in a list (up to the available screen height) and return the picked one."""
+        dialog = QtWidgets.QDialog(_mainwindow())
+        dialog.setWindowTitle(title)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.addWidget(QtWidgets.QLabel(label))
+
+        list_widget = QtWidgets.QListWidget(dialog)
+        list_widget.addItems(choices)
+        list_widget.setCurrentRow(0)
+        layout.addWidget(list_widget)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        layout.addWidget(buttons)
+        list_widget.itemDoubleClicked.connect(lambda _: dialog.accept())
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        self._fit_dialog_to_list(dialog, list_widget)
+
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        selected = list_widget.currentItem()
+        return selected.text() if selected is not None else None
 
     def _pick_repo_without_active_doc(self):
         recent_repos = _recent_log_repos()
@@ -1085,15 +1162,12 @@ class LogCommand:
                 for repo_path in recent_repos
             ]
             choices = recent_labels + [browse_choice]
-            selected_label, ok = QtWidgets.QInputDialog.getItem(
-                _mainwindow(),
+            selected_label = self._select_from_list(
                 _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Log")),
                 _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Select a FreeCAD git archive:")),
                 choices,
-                0,
-                False,
             )
-            if not ok:
+            if selected_label is None:
                 return None
             if selected_label != browse_choice:
                 selected_index = recent_labels.index(selected_label)
