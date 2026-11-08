@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>freecad_git_preferences</class>
+ <widget class="QWidget" name="freecad_git_preferences">
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QGroupBox" name="groupBox">
+     <property name="title">
+      <string>freecad-git</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="selectedLabel">
+        <property name="text">
+         <string>Selected commit color</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="Gui::PrefColorButton" name="selectedColorButton">
+        <property name="color">
+         <color>
+          <red>100</red>
+          <green>150</green>
+          <blue>200</blue>
+         </color>
+        </property>
+        <property name="prefEntry">
+         <string>SelectedCommitColor</string>
+        </property>
+        <property name="prefPath">
+         <string>Mod/freecad-git</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="currentLabel">
+        <property name="text">
+         <string>Current commit color</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="Gui::PrefColorButton" name="currentColorButton">
+        <property name="color">
+         <color>
+          <red>120</red>
+          <green>180</green>
+          <blue>120</blue>
+         </color>
+        </property>
+        <property name="prefEntry">
+         <string>CurrentCommitColor</string>
+        </property>
+        <property name="prefPath">
+         <string>Mod/freecad-git</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="ancestorLabel">
+        <property name="text">
+         <string>Ancestor commit color</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="Gui::PrefColorButton" name="ancestorColorButton">
+        <property name="color">
+         <color>
+          <red>220</red>
+          <green>192</green>
+          <blue>100</blue>
+         </color>
+        </property>
+        <property name="prefEntry">
+         <string>AncestorCommitColor</string>
+        </property>
+        <property name="prefPath">
+         <string>Mod/freecad-git</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>Gui::PrefColorButton</class>
+   <extends>QWidget</extends>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
