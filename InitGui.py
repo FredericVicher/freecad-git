@@ -7,7 +7,7 @@ import FreeCAD  # type: ignore[import-not-found]
 import FreeCADGui  # type: ignore[import-not-found]
 
 
-FreeCAD.Console.PrintMessage("git startup: InitGui loaded (freecad-git)\n")
+FreeCAD.Console.PrintMessage("git startup: freecad-git addon initialized (not a workbench activation signal)\n")
 
 
 def _register_translations():
@@ -60,51 +60,49 @@ class GitWorkbench(FreeCADGui.Workbench):
         return "Gui::PythonWorkbench"
 
 
-def _activate_git_on_startup_if_enabled():
-    try:
-        from PySide6 import QtCore  # type: ignore[import-not-found]
-
-        prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/freecad-git")
-        enabled = prefs.GetBool("AutoStartWorkbench", False)
-        FreeCAD.Console.PrintMessage(f"git startup: AutoStartWorkbench={enabled}\n")
-        if not enabled:
-            return
-
-        activation_done = {"done": False}
-
-        def _activate():
-            if activation_done["done"]:
-                return
-
-            try:
-                workbenches = FreeCADGui.listWorkbenches()
-            except Exception:
-                workbenches = {}
-
-            wb_name = "GitWorkbench" if "GitWorkbench" in workbenches else None
-            if wb_name is None:
-                for name, wb in workbenches.items():
-                    if getattr(wb, "MenuText", "") == "Git":
-                        wb_name = name
-                        break
-
-            FreeCAD.Console.PrintMessage(f"git startup: resolved workbench={wb_name}\n")
-            if not wb_name:
-                return
-
-            try:
-                FreeCADGui.activateWorkbench(wb_name)
-                activation_done["done"] = True
-                FreeCAD.Console.PrintMessage(f"git startup: activated {wb_name}\n")
-            except Exception as exc:
-                FreeCAD.Console.PrintMessage(f"git startup: activation failed for {wb_name}: {exc}\n")
-
-        for delay_ms in (250, 1000, 2500, 5000, 8000):
-            QtCore.QTimer.singleShot(delay_ms, _activate)
-    except Exception as exc:
-        FreeCAD.Console.PrintMessage(f"git startup: init exception: {exc}\n")
-
-
 _register_translations()
+
+
+def _register_preferences():
+    try:
+        if not hasattr(FreeCADGui, "addPreferencePage"):
+            return
+        module_file = globals().get("__file__")
+        if module_file:
+            root_dir = os.path.dirname(os.path.abspath(module_file))
+        else:
+            try:
+                import freecad_git as _fcgit
+                root_dir = os.path.dirname(os.path.dirname(os.path.abspath(_fcgit.__file__)))
+            except Exception:
+                root_dir = os.getcwd()
+        ui_file = os.path.join(root_dir, "freecad_git", "preferences.ui")
+        if os.path.isfile(ui_file):
+            # Category label in FreeCAD's Preferences dialog.
+            FreeCADGui.addPreferencePage(ui_file, "Git")
+            FreeCAD.Console.PrintMessage(f"git startup: preference page registered from {ui_file}\n")
+        else:
+            FreeCAD.Console.PrintMessage(f"git startup: preference page not found: {ui_file}\n")
+    except Exception as exc:
+        FreeCAD.Console.PrintMessage(f"git startup: preference page registration failed: {exc}\n")
+
+
+def _ensure_default_preferences():
+    """Materialize default keys so they are visible in FreeCAD Parameter Editor."""
+    try:
+        prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/freecad-git")
+        default_colors = {
+            "SelectedCommitColor": "#6496C8",
+            "CurrentCommitColor": "#78B478",
+            "AncestorCommitColor": "#DCC064",
+        }
+        for key, value in default_colors.items():
+            if not prefs.GetString(key, "").strip():
+                prefs.SetString(key, value)
+    except Exception as exc:
+        FreeCAD.Console.PrintMessage(f"git startup: default preference init failed: {exc}\n")
+
+
+_ensure_default_preferences()
+_register_preferences()
 FreeCADGui.addWorkbench(GitWorkbench())
-_activate_git_on_startup_if_enabled()

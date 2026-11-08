@@ -49,13 +49,121 @@ def _tr(text: str) -> str:
 
 _RECENT_LOG_SCAN_PARAM = "RecentLogScanDirs"
 _RECENT_LOG_REPO_PARAM = "RecentLogRepos"
-_AUTO_START_WORKBENCH_PARAM = "AutoStartWorkbench"
+_PREVIOUS_AUTOLOAD_MODULE_PARAM = "PreviousAutoloadModule"
+_GENERAL_PREFS_PATH = "User parameter:BaseApp/Preferences/General"
+_WORKBENCH_PREFS_PATH = "User parameter:BaseApp/Preferences/Workbenches"
+_GENERAL_AUTOLOAD_KEY = "AutoloadModule"
+_WORKBENCH_DEFAULT_KEY = "DefaultWorkbench"
+_GIT_WORKBENCH_IDS = frozenset({"Git", "GitWorkbench"})
+_SELECTED_COMMIT_COLOR_PARAM = "SelectedCommitColor"
+_CURRENT_COMMIT_COLOR_PARAM = "CurrentCommitColor"
+_ANCESTOR_COMMIT_COLOR_PARAM = "AncestorCommitColor"
 _MAX_RECENT_LOG_SCAN_DIRS = 8
 _MAX_RECENT_LOG_REPOS = 16
 
 
 def _prefs():
     return FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/freecad-git")
+
+
+def _general_prefs():
+    return FreeCAD.ParamGet(_GENERAL_PREFS_PATH)
+
+
+def _workbench_prefs():
+    return FreeCAD.ParamGet(_WORKBENCH_PREFS_PATH)
+
+
+def _startup_workbench_values() -> tuple[str, str]:
+    """Return (default_workbench, autoload_module)."""
+    default_wb = _workbench_prefs().GetString(_WORKBENCH_DEFAULT_KEY, "").strip()
+    autoload = _general_prefs().GetString(_GENERAL_AUTOLOAD_KEY, "").strip()
+    return default_wb, autoload
+
+
+def _is_git_workbench_name(name: str | None) -> bool:
+    return (name or "").strip() in _GIT_WORKBENCH_IDS
+
+
+def _effective_git_workbench_name() -> str:
+    """Return the best workbench identifier to persist in startup preferences."""
+    for candidate in _startup_workbench_values():
+        if _is_git_workbench_name(candidate):
+            return candidate
+
+    if hasattr(FreeCADGui, "listWorkbenches"):
+        try:
+            names = set(FreeCADGui.listWorkbenches().keys())
+            if "GitWorkbench" in names:
+                return "GitWorkbench"
+            if "Git" in names:
+                return "Git"
+        except Exception:
+            pass
+
+    # Conservative fallback matching FreeCAD's common Python workbench id pattern.
+    return "GitWorkbench"
+
+
+def _is_git_autostart_enabled() -> bool:
+    default_wb, autoload = _startup_workbench_values()
+    return _is_git_workbench_name(default_wb) or _is_git_workbench_name(autoload)
+
+
+def _set_startup_workbench(module_name: str) -> None:
+    """Set both startup-related keys to keep FreeCAD startup prefs consistent."""
+    _workbench_prefs().SetString(_WORKBENCH_DEFAULT_KEY, module_name)
+    _general_prefs().SetString(_GENERAL_AUTOLOAD_KEY, module_name)
+
+
+def _parse_qcolor(value: str | None, default_hex: str) -> QtGui.QColor:
+    """Read a color from preferences, accepting hex (#RRGGBB) or CSV RGB values."""
+    candidate = (value or default_hex).strip()
+    try:
+        color = QtGui.QColor(candidate)
+        if color.isValid():
+            return color
+    except Exception:
+        pass
+
+    clean = candidate.replace(";", ",").replace(" ", "")
+    if clean.startswith("#"):
+        try:
+            color = QtGui.QColor(clean)
+            if color.isValid():
+                return color
+        except Exception:
+            pass
+    if "," in clean:
+        parts = [part for part in clean.split(",") if part]
+        if len(parts) == 3:
+            try:
+                rgb = [int(part) for part in parts]
+                if all(0 <= channel <= 255 for channel in rgb):
+                    return QtGui.QColor(*rgb)
+            except ValueError:
+                pass
+    return QtGui.QColor(default_hex)
+
+
+def _pref_color(prefs, name: str, default_hex: str) -> QtGui.QColor:
+    """Read a color saved by a Gui::PrefColorButton (unsigned 0xRRGGBBAA), with legacy string fallback."""
+    default = QtGui.QColor(default_hex)
+    default_packed = (default.red() << 24) | (default.green() << 16) | (default.blue() << 8) | 0xFF
+    packed = prefs.GetUnsigned(name, default_packed)
+    if packed != default_packed:
+        return QtGui.QColor((packed >> 24) & 0xFF, (packed >> 16) & 0xFF, (packed >> 8) & 0xFF)
+    legacy = prefs.GetString(name, "")
+    return _parse_qcolor(legacy, default_hex) if legacy else default
+
+
+def _log_highlight_colors() -> dict[str, QtGui.QColor]:
+    prefs = _prefs()
+    return {
+        "selected": _pref_color(prefs, _SELECTED_COMMIT_COLOR_PARAM, "#6496C8"),
+        "current": _pref_color(prefs, _CURRENT_COMMIT_COLOR_PARAM, "#78B478"),
+        "ancestor": _pref_color(prefs, _ANCESTOR_COMMIT_COLOR_PARAM, "#DCC064"),
+    }
 
 
 def _recent_log_scan_dirs() -> list[str]:
@@ -648,10 +756,20 @@ class _LogDialog(QtWidgets.QDialog):
             header.setSectionResizeMode(idx, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.log_display.columnCount() - 1, QtWidgets.QHeaderView.ResizeToContents)
         total_width = sum(self.log_display.columnWidth(c) for c in range(self.log_display.columnCount())) + 40
-        if total_width > 1500:
-            self.resize(min(total_width, 1500), self.height())
-        else:
-            self.resize(max(1000, total_width), self.height())
+        width = min(total_width, 1500) if total_width > 1500 else max(1000, total_width)
+        row_count = self.log_display.rowCount()
+        row_height = self.log_display.verticalHeader().defaultSectionSize()
+        table_height = (
+            row_height * row_count
+            + self.log_display.horizontalHeader().height()
+            + self.log_display.horizontalScrollBar().sizeHint().height()
+            + 2 * self.log_display.frameWidth()
+        )
+        # Room for the info label, buttons, margins and the title bar.
+        wanted_height = table_height + 160
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        max_height = int(screen.availableGeometry().height() * 0.95) if screen else 900
+        self.resize(width, max(self.minimumHeight(), min(wanted_height, max_height)))
         self.log_display.setMinimumWidth(max(700, min(total_width, 1400)))
         layout.addWidget(self.log_display)
 
@@ -801,6 +919,7 @@ class _LogDialog(QtWidgets.QDialog):
         if ancestor_rows is None:
             ancestor_rows = set()
 
+        colors = _log_highlight_colors()
         for row_idx in range(self.log_display.rowCount()):
             for col in range(self.log_display.columnCount()):
                 item = self.log_display.item(row_idx, col)
@@ -810,15 +929,29 @@ class _LogDialog(QtWidgets.QDialog):
                     item.setBackground(QtGui.QBrush())
                 elif row_idx == line_num:
                     if self.current_commit and self.log_display.item(line_num, 0) and self.log_display.item(line_num, 0).text() == self.current_commit:
-                        item.setBackground(QtGui.QBrush(QtGui.QColor(120, 180, 120)))
+                        item.setBackground(QtGui.QBrush(colors["current"]))
                     else:
-                        item.setBackground(QtGui.QBrush(QtGui.QColor(100, 150, 200)))
+                        item.setBackground(QtGui.QBrush(colors["selected"]))
                 elif row_idx in ancestor_rows:
-                    item.setBackground(QtGui.QBrush(QtGui.QColor(220, 180, 100)))
+                    item.setBackground(QtGui.QBrush(colors["ancestor"]))
                 else:
                     item.setBackground(QtGui.QBrush())
 
         self._current_highlighted_line = line_num
+        self._apply_selection_color(line_num, colors)
+
+    def _apply_selection_color(self, line_num, colors):
+        """Qt paints selected rows with its own highlight, so override it with the preference color."""
+        first = self.log_display.item(line_num, 0) if line_num is not None and line_num >= 0 else None
+        if first is None:
+            return
+        is_current = bool(self.current_commit) and first.text() == self.current_commit
+        color = colors["current"] if is_current else colors["selected"]
+        text = "#000000" if color.lightness() > 128 else "#FFFFFF"
+        self.log_display.setStyleSheet(
+            "QTableWidget::item:selected, QTableWidget::item:selected:!active "
+            f"{{ background-color: {color.name()}; color: {text}; }}"
+        )
 
     def _on_pull(self):
         commit_ref = self.selected_commit or self.current_commit
@@ -970,12 +1103,54 @@ class LogCommand:
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
 
+        self._fit_dialog_to_list(dialog, list_widget)
+
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         selected = list_widget.currentItem()
         if selected is None:
             return None
         return Path(str(selected.data(QtCore.Qt.UserRole)))
+
+    @staticmethod
+    def _fit_dialog_to_list(dialog, list_widget) -> None:
+        """Size the dialog to show every row, capped to 90% of the screen height."""
+        count = list_widget.count()
+        row_height = list_widget.sizeHintForRow(0) if count else 20
+        screen = dialog.screen() or QtWidgets.QApplication.primaryScreen()
+        max_height = int(screen.availableGeometry().height() * 0.9) if screen else 800
+        chrome = 120
+        wanted = row_height * count + 2 * list_widget.frameWidth() + chrome
+        width = max(560, list_widget.sizeHintForColumn(0) + 80)
+        dialog.resize(width, min(wanted, max_height))
+
+    def _select_from_list(self, title: str, label: str, choices: list[str]) -> str | None:
+        """Show all choices in a list (up to the available screen height) and return the picked one."""
+        dialog = QtWidgets.QDialog(_mainwindow())
+        dialog.setWindowTitle(title)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.addWidget(QtWidgets.QLabel(label))
+
+        list_widget = QtWidgets.QListWidget(dialog)
+        list_widget.addItems(choices)
+        list_widget.setCurrentRow(0)
+        layout.addWidget(list_widget)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        layout.addWidget(buttons)
+        list_widget.itemDoubleClicked.connect(lambda _: dialog.accept())
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        self._fit_dialog_to_list(dialog, list_widget)
+
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        selected = list_widget.currentItem()
+        return selected.text() if selected is not None else None
 
     def _pick_repo_without_active_doc(self):
         recent_repos = _recent_log_repos()
@@ -987,15 +1162,12 @@ class LogCommand:
                 for repo_path in recent_repos
             ]
             choices = recent_labels + [browse_choice]
-            selected_label, ok = QtWidgets.QInputDialog.getItem(
-                _mainwindow(),
+            selected_label = self._select_from_list(
                 _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Log")),
                 _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Select a FreeCAD git archive:")),
                 choices,
-                0,
-                False,
             )
-            if not ok:
+            if selected_label is None:
                 return None
             if selected_label != browse_choice:
                 selected_index = recent_labels.index(selected_label)
@@ -1190,57 +1362,31 @@ class ToggleAutoStartCommand:
         return True
 
     def Activated(self):
-        enabled = _prefs().GetBool(_AUTO_START_WORKBENCH_PARAM, False)
+        prefs = _prefs()
+        enabled = _is_git_autostart_enabled()
         if enabled:
-            reply = QtWidgets.QMessageBox.question(
-                _mainwindow(),
-                _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-                _tr(
-                    QtCore.QT_TRANSLATE_NOOP(
-                        "freecad_git",
-                        "Disable automatic Git workbench activation at FreeCAD startup?",
-                    )
-                ),
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if reply != QtWidgets.QMessageBox.Yes:
-                return
-            _prefs().SetBool(_AUTO_START_WORKBENCH_PARAM, False)
-            _log("git startup: auto-start disabled")
-            QtWidgets.QMessageBox.information(
-                _mainwindow(),
-                _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-                _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git auto-start disabled.")),
+            previous_module = prefs.GetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, "")
+            if _is_git_workbench_name(previous_module):
+                # Legacy bad state: never restore Git when disabling Git auto-start.
+                previous_module = ""
+            _set_startup_workbench(previous_module)
+            _log(
+                "git startup: auto-start disabled "
+                f"(DefaultWorkbench/AutoloadModule restored to '{previous_module}')"
             )
             return
 
-        reply = QtWidgets.QMessageBox.question(
-            _mainwindow(),
-            _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-            _tr(
-                QtCore.QT_TRANSLATE_NOOP(
-                    "freecad_git",
-                    "Enable automatic Git workbench activation at FreeCAD startup?",
-                )
-            ),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.Yes,
-        )
-        if reply != QtWidgets.QMessageBox.Yes:
-            return
+        default_wb, autoload = _startup_workbench_values()
+        current_module = default_wb or autoload
 
-        _prefs().SetBool(_AUTO_START_WORKBENCH_PARAM, True)
-        _log("git startup: auto-start enabled")
-        QtWidgets.QMessageBox.information(
-            _mainwindow(),
-            _tr(QtCore.QT_TRANSLATE_NOOP("freecad_git", "Git Workbench Startup")),
-            _tr(
-                QtCore.QT_TRANSLATE_NOOP(
-                    "freecad_git",
-                    "Git auto-start enabled. It will apply on next FreeCAD startup.",
-                )
-            ),
+        if current_module and not _is_git_workbench_name(current_module):
+            prefs.SetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, current_module)
+
+        target_git_module = _effective_git_workbench_name()
+        _set_startup_workbench(target_git_module)
+        _log(
+            "git startup: auto-start enabled "
+            f"(DefaultWorkbench/AutoloadModule set to '{target_git_module}', previous='{current_module}')"
         )
 
 
