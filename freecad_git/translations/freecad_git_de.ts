@@ -144,4 +144,23 @@
       <translation>Git-Autostart deaktiviert.</translation>
     </message>
   </context>
+  <context>
+    <name>freecad_git_preferences</name>
+    <message>
+      <source>Colors</source>
+      <translation>Farben</translation>
+    </message>
+    <message>
+      <source>Selected commit color</source>
+      <translation>Farbe des ausgewählten Commits</translation>
+    </message>
+    <message>
+      <source>Current commit color</source>
+      <translation>Farbe des aktuellen Commits</translation>
+    </message>
+    <message>
+      <source>Ancestor commit color</source>
+      <translation>Farbe der Vorgänger-Commits</translation>
+    </message>
+  </context>
 </TS>

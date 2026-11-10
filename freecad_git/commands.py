@@ -50,6 +50,7 @@ def _tr(text: str) -> str:
 _RECENT_LOG_SCAN_PARAM = "RecentLogScanDirs"
 _RECENT_LOG_REPO_PARAM = "RecentLogRepos"
 _PREVIOUS_AUTOLOAD_MODULE_PARAM = "PreviousAutoloadModule"
+_PREVIOUS_DEFAULT_WORKBENCH_PARAM = "PreviousDefaultWorkbench"
 _GENERAL_PREFS_PATH = "User parameter:BaseApp/Preferences/General"
 _WORKBENCH_PREFS_PATH = "User parameter:BaseApp/Preferences/Workbenches"
 _GENERAL_AUTOLOAD_KEY = "AutoloadModule"
@@ -150,11 +151,28 @@ def _pref_color(prefs, name: str, default_hex: str) -> QtGui.QColor:
     """Read a color saved by a Gui::PrefColorButton (unsigned 0xRRGGBBAA), with legacy string fallback."""
     default = QtGui.QColor(default_hex)
     default_packed = (default.red() << 24) | (default.green() << 16) | (default.blue() << 8) | 0xFF
-    packed = prefs.GetUnsigned(name, default_packed)
-    if packed != default_packed:
+    if name in prefs.GetUnsigneds():
+        packed = prefs.GetUnsigned(name, default_packed)
         return QtGui.QColor((packed >> 24) & 0xFF, (packed >> 16) & 0xFF, (packed >> 8) & 0xFF)
     legacy = prefs.GetString(name, "")
     return _parse_qcolor(legacy, default_hex) if legacy else default
+
+
+def _contrast_text_color(background: QtGui.QColor) -> QtGui.QColor:
+    """Return black or white, whichever has the higher WCAG contrast ratio against the background."""
+
+    def _linear(channel: int) -> float:
+        value = channel / 255.0
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+    luminance = (
+        0.2126 * _linear(background.red())
+        + 0.7152 * _linear(background.green())
+        + 0.0722 * _linear(background.blue())
+    )
+    contrast_with_black = (luminance + 0.05) / 0.05
+    contrast_with_white = 1.05 / (luminance + 0.05)
+    return QtGui.QColor("#000000") if contrast_with_black >= contrast_with_white else QtGui.QColor("#FFFFFF")
 
 
 def _log_highlight_colors() -> dict[str, QtGui.QColor]:
@@ -925,17 +943,24 @@ class _LogDialog(QtWidgets.QDialog):
                 item = self.log_display.item(row_idx, col)
                 if item is None:
                     continue
+                background = None
                 if row_idx == self._current_highlighted_line and row_idx != line_num and row_idx not in ancestor_rows:
-                    item.setBackground(QtGui.QBrush())
+                    background = None
                 elif row_idx == line_num:
                     if self.current_commit and self.log_display.item(line_num, 0) and self.log_display.item(line_num, 0).text() == self.current_commit:
-                        item.setBackground(QtGui.QBrush(colors["current"]))
+                        background = colors["current"]
                     else:
-                        item.setBackground(QtGui.QBrush(colors["selected"]))
+                        background = colors["selected"]
                 elif row_idx in ancestor_rows:
-                    item.setBackground(QtGui.QBrush(colors["ancestor"]))
-                else:
+                    background = colors["ancestor"]
+
+                if background is None:
                     item.setBackground(QtGui.QBrush())
+                    # Drop the explicit foreground so the theme's text color applies again.
+                    item.setData(QtCore.Qt.ForegroundRole, None)
+                else:
+                    item.setBackground(QtGui.QBrush(background))
+                    item.setForeground(QtGui.QBrush(_contrast_text_color(background)))
 
         self._current_highlighted_line = line_num
         self._apply_selection_color(line_num, colors)
@@ -947,7 +972,7 @@ class _LogDialog(QtWidgets.QDialog):
             return
         is_current = bool(self.current_commit) and first.text() == self.current_commit
         color = colors["current"] if is_current else colors["selected"]
-        text = "#000000" if color.lightness() > 128 else "#FFFFFF"
+        text = _contrast_text_color(color).name()
         self.log_display.setStyleSheet(
             "QTableWidget::item:selected, QTableWidget::item:selected:!active "
             f"{{ background-color: {color.name()}; color: {text}; }}"
@@ -1365,28 +1390,38 @@ class ToggleAutoStartCommand:
         prefs = _prefs()
         enabled = _is_git_autostart_enabled()
         if enabled:
-            previous_module = prefs.GetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, "")
-            if _is_git_workbench_name(previous_module):
-                # Legacy bad state: never restore Git when disabling Git auto-start.
-                previous_module = ""
-            _set_startup_workbench(previous_module)
+            stored = prefs.GetStrings()
+            legacy_module = prefs.GetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, "")
+            previous_default = prefs.GetString(
+                _PREVIOUS_DEFAULT_WORKBENCH_PARAM,
+                legacy_module if _PREVIOUS_DEFAULT_WORKBENCH_PARAM not in stored else "",
+            )
+            previous_autoload = legacy_module if _PREVIOUS_AUTOLOAD_MODULE_PARAM in stored else ""
+            # Never restore Git when disabling Git auto-start.
+            if _is_git_workbench_name(previous_default):
+                previous_default = ""
+            if _is_git_workbench_name(previous_autoload):
+                previous_autoload = ""
+            _workbench_prefs().SetString(_WORKBENCH_DEFAULT_KEY, previous_default)
+            _general_prefs().SetString(_GENERAL_AUTOLOAD_KEY, previous_autoload)
             _log(
                 "git startup: auto-start disabled "
-                f"(DefaultWorkbench/AutoloadModule restored to '{previous_module}')"
+                f"(DefaultWorkbench restored to '{previous_default}', "
+                f"AutoloadModule restored to '{previous_autoload}')"
             )
             return
 
         default_wb, autoload = _startup_workbench_values()
-        current_module = default_wb or autoload
-
-        if current_module and not _is_git_workbench_name(current_module):
-            prefs.SetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, current_module)
+        # Snapshot both keys independently, including empty values.
+        prefs.SetString(_PREVIOUS_DEFAULT_WORKBENCH_PARAM, default_wb)
+        prefs.SetString(_PREVIOUS_AUTOLOAD_MODULE_PARAM, autoload)
 
         target_git_module = _effective_git_workbench_name()
         _set_startup_workbench(target_git_module)
         _log(
             "git startup: auto-start enabled "
-            f"(DefaultWorkbench/AutoloadModule set to '{target_git_module}', previous='{current_module}')"
+            f"(DefaultWorkbench/AutoloadModule set to '{target_git_module}', "
+            f"previous default='{default_wb}', previous autoload='{autoload}')"
         )
 
 

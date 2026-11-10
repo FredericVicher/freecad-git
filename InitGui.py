@@ -77,6 +77,10 @@ def _register_preferences():
             except Exception:
                 root_dir = os.getcwd()
         ui_file = os.path.join(root_dir, "freecad_git", "preferences.ui")
+        icons_dir = os.path.join(root_dir, "freecad_git", "icons")
+        if os.path.isdir(icons_dir) and hasattr(FreeCADGui, "addIconPath"):
+            # Lets FreeCAD resolve the "preferences-git" icon of the Git preference group.
+            FreeCADGui.addIconPath(icons_dir)
         if os.path.isfile(ui_file):
             # Category label in FreeCAD's Preferences dialog.
             FreeCADGui.addPreferencePage(ui_file, "Git")
@@ -103,6 +107,36 @@ def _ensure_default_preferences():
         FreeCAD.Console.PrintMessage(f"git startup: default preference init failed: {exc}\n")
 
 
+def _migrate_legacy_autostart():
+    """One-time move of the legacy AutoStartWorkbench flag to FreeCAD's startup preferences."""
+    try:
+        prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/freecad-git")
+        if "AutoStartWorkbench" not in prefs.GetBools():
+            return
+        legacy_enabled = prefs.GetBool("AutoStartWorkbench", False)
+        prefs.RemBool("AutoStartWorkbench")
+        if not legacy_enabled:
+            return
+
+        git_ids = ("Git", "GitWorkbench")
+        wb_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Workbenches")
+        general_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/General")
+        default_wb = wb_prefs.GetString("DefaultWorkbench", "").strip()
+        autoload = general_prefs.GetString("AutoloadModule", "").strip()
+        if default_wb in git_ids or autoload in git_ids:
+            return
+
+        # Keep the previous startup module so disabling auto-start can restore it.
+        prefs.SetString("PreviousDefaultWorkbench", default_wb)
+        prefs.SetString("PreviousAutoloadModule", autoload)
+        wb_prefs.SetString("DefaultWorkbench", "GitWorkbench")
+        general_prefs.SetString("AutoloadModule", "GitWorkbench")
+        FreeCAD.Console.PrintMessage("git startup: migrated legacy AutoStartWorkbench to startup preferences\n")
+    except Exception as exc:
+        FreeCAD.Console.PrintMessage(f"git startup: legacy auto-start migration failed: {exc}\n")
+
+
 _ensure_default_preferences()
+_migrate_legacy_autostart()
 _register_preferences()
 FreeCADGui.addWorkbench(GitWorkbench())
