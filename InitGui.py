@@ -77,6 +77,10 @@ def _register_preferences():
             except Exception:
                 root_dir = os.getcwd()
         ui_file = os.path.join(root_dir, "freecad_git", "preferences.ui")
+        icons_dir = os.path.join(root_dir, "freecad_git", "icons")
+        if os.path.isdir(icons_dir) and hasattr(FreeCADGui, "addIconPath"):
+            # Lets FreeCAD resolve the "preferences-git" icon of the Git preference group.
+            FreeCADGui.addIconPath(icons_dir)
         if os.path.isfile(ui_file):
             # Category label in FreeCAD's Preferences dialog.
             FreeCADGui.addPreferencePage(ui_file, "Git")
@@ -123,9 +127,8 @@ def _migrate_legacy_autostart():
             return
 
         # Keep the previous startup module so disabling auto-start can restore it.
-        previous = default_wb or autoload
-        if previous:
-            prefs.SetString("PreviousAutoloadModule", previous)
+        prefs.SetString("PreviousDefaultWorkbench", default_wb)
+        prefs.SetString("PreviousAutoloadModule", autoload)
         wb_prefs.SetString("DefaultWorkbench", "GitWorkbench")
         general_prefs.SetString("AutoloadModule", "GitWorkbench")
         FreeCAD.Console.PrintMessage("git startup: migrated legacy AutoStartWorkbench to startup preferences\n")

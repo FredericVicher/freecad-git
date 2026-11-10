@@ -2,6 +2,9 @@
 <ui version="4.0">
  <class>freecad_git_preferences</class>
  <widget class="QWidget" name="freecad_git_preferences">
+  <property name="windowTitle">
+   <string>Colors</string>
+  </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
     <widget class="QGroupBox" name="groupBox">
